@@ -1,0 +1,55 @@
+{
+  "name": "language-server-cc",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./vscode-extension/out/extension.js",
+  "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "Language Server CC configuration",
+      "properties": {
+        "languageServerCC.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        },
+        "languageServerCC.db.alias": {
+          "scope": "window",
+          "type": "object",
+          "default": {},
+          "description": "Creates aliases to map source files to relevant AST databases."
+        }
+      }
+    }
+  },
+  "type": "module",
+  "scripts": {
+    "test": "mocha"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "activationEvents": [
+    "onLanguage:c"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/sqlite3": "^3.1.11",
+    "eslint-plugin-mocha": "^10.2.0",
+    "mocha": "^10.2.0",
+    "prettier": "3.2.4",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "minimist": "^1.2.8",
+    "sqlite3": "^5.1.7",
+    "vscode-languageserver": "^9.0.1"
+  }
+}
