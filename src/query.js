@@ -1,6 +1,27 @@
 // @ts-check
 
 import sqlite3 from "sqlite3";
+import TSI from "./symbol.js";
+
+/**
+ * @typedef {undefined | {
+ *   symbol: number,
+ *   begin_row: number,
+ *   begin_col: number,
+ *   end_row: number,
+ *   end_col: number,
+ * }} Token
+ */
+
+/**
+ * @typedef {undefined | {
+ *   kind: string,
+ *   name: string,
+ *   qualified_type: string,
+ *   desugared_type: string,
+ *   specs: number,
+ * }} Node
+ */
 
 export default class Query {
   /**
@@ -17,10 +38,10 @@ export default class Query {
   }
 
   /**
-   *
+   * @private
    * @param {string} pathname
    */
-  db(pathname) {
+  openDB(pathname) {
     for (const key in this.dbAlias) {
       if (pathname.search(key) !== -1) {
         pathname = pathname.replace(key, this.dbAlias[key]);
@@ -35,10 +56,10 @@ export default class Query {
    *
    * @param {string} pathname
    */
-  getDB(pathname) {
+  db(pathname) {
     let db = this.dbCaches.get(pathname);
     if (!db) {
-      db = this.db(pathname);
+      db = this.openDB(pathname);
       this.dbCaches.set(pathname, db);
     }
     return db;
@@ -50,13 +71,11 @@ export default class Query {
    * @param {string} file
    * @returns {Promise<number>}
    */
-  fileNumber(db, file) {
+  src(db, file) {
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT number FROM source WHERE filename = $file",
-        {
-          $file: file,
-        },
+        "SELECT number FROM src WHERE filename = $file",
+        { $file: file },
         (err, row) => {
           if (err) {
             reject(err);
@@ -73,44 +92,41 @@ export default class Query {
   /**
    *
    * @param {import("sqlite3").Database} db
-   * @param {number} file
+   * @param {number} src
    * @param {import("vscode-languageserver/node").Position} pos
    */
-  byLocation(db, file, pos) {
-    return new Promise((resolve, reject) => {
-      db.get(
-        "SELECT * FROM ast WHERE file = $file AND line = $line AND col <= $col AND col + length(name) >= $col",
-        {
-          $file: file,
-          $line: pos.line + 1,
-          $col: pos.character + 1,
-        },
-        (err, row) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(row);
-          }
-        }
-      );
-    });
-  }
+  // byLocation(db, src, pos) {
+  //   return new Promise((resolve, reject) => {
+  //     db.get(
+  //       "SELECT * FROM ast WHERE src = $src AND row = $row AND col <= $col AND col + length(name) >= $col",
+  //       {
+  //         $src: src,
+  //         $row: pos.line + 1,
+  //         $col: pos.character + 1,
+  //       },
+  //       (err, row) => {
+  //         if (err) {
+  //           reject(err);
+  //         } else {
+  //           resolve(row);
+  //         }
+  //       }
+  //     );
+  //   });
+  // }
 
   /**
    *
    * @param {import("sqlite3").Database} db
-   * @param {number} file
+   * @param {number} src
    * @param {import("vscode-languageserver/node").Position} pos
+   * @returns {Promise<Token>}
    */
-  byRange(db, file, pos) {
+  token(db, src, pos) {
     return new Promise((resolve, reject) => {
-      db.all(
-        "SELECT * FROM ast WHERE begin_file = $file AND begin_line = $line AND begin_col <= $col AND end_file = $file AND end_line = $line AND end_col >= $col",
-        {
-          $file: file,
-          $line: pos.line + 1,
-          $col: pos.character + 1,
-        },
+      db.get(
+        "SELECT * FROM cst WHERE src = $src AND ((begin_row = $row AND begin_col <= $col) OR (begin_row < $row)) AND ((end_row = $row AND end_col > $col) OR (end_row > $row))",
+        { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
         (err, rows) => {
           if (err) {
             reject(err);
@@ -125,21 +141,50 @@ export default class Query {
   /**
    *
    * @param {import("sqlite3").Database} db
-   * @param {string} id
+   * @param {string} ptr
    * @returns
    */
-  byId(db, id) {
+  // byPtr(db, ptr) {
+  //   return new Promise((resolve, reject) => {
+  //     db.get(
+  //       "SELECT * FROM ast WHERE ptr = $ptr",
+  //       {
+  //         $ptr: ptr,
+  //       },
+  //       (err, row) => {
+  //         if (err) {
+  //           reject(err);
+  //         } else {
+  //           resolve(row);
+  //         }
+  //       }
+  //     );
+  //   });
+  // }
+
+  /**
+   *
+   * @param {import("sqlite3").Database} db
+   * @param {number} src
+   * @param {number} row
+   * @param {number} col
+   * @param {string} token
+   * @param {boolean} [isType]
+   */
+  node(db, src, row, col, token, isType) {
+    const sql = isType
+      ? "SELECT * FROM ast WHERE begin_src = $src AND begin_row = $row AND begin_col = $col AND qualified_type = $token"
+      : "SELECT * FROM ast WHERE ((src = -1 AND begin_src = $src AND begin_row = $row AND begin_col = $col) OR (src = $src AND row = $row AND col = $col)) AND name = $token";
+
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT * FROM ast WHERE id = $id",
-        {
-          $id: id,
-        },
-        (err, row) => {
+        sql,
+        { $src: src, $row: row, $col: col, $token: token },
+        (err, rows) => {
           if (err) {
             reject(err);
           } else {
-            resolve(row);
+            resolve(rows);
           }
         }
       );
@@ -151,46 +196,27 @@ export default class Query {
    * @param {import("sqlite3").Database} db
    * @param {string} type
    */
-  byType(db, type) {
-    let i = type.length;
-    while (i > 0 && isPunctuation(type.charCodeAt(i - 1))) {
-      --i;
-    }
-    return new Promise((resolve, reject) => {
-      db.get(
-        "SELECT * FROM ast WHERE name = $type",
-        {
-          $type: type.substring(0, i),
-        },
-        (err, rows) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(rows);
-          }
-        }
-      );
-    });
-  }
-
-  byFunctionDecl(pathname, decl) {
-    return new Promise((resolve, reject) => {
-      const db = this.getDB(pathname);
-      db.all(
-        "SELECT * FROM ast WHERE id IN (SELECT id FROM hierarchy WHERE parent = $parent)",
-        {
-          $parent: decl.id,
-        },
-        (err, rows) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(rows);
-          }
-        }
-      );
-    });
-  }
+  // byType(db, type) {
+  //   let i = type.length;
+  //   while (i > 0 && isPunctuation(type.charCodeAt(i - 1))) {
+  //     --i;
+  //   }
+  //   return new Promise((resolve, reject) => {
+  //     db.get(
+  //       "SELECT * FROM ast WHERE name = $type",
+  //       {
+  //         $type: type.substring(0, i),
+  //       },
+  //       (err, rows) => {
+  //         if (err) {
+  //           reject(err);
+  //         } else {
+  //           resolve(rows);
+  //         }
+  //       }
+  //     );
+  //   });
+  // }
 }
 
 /**
