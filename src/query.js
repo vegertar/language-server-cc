@@ -1,11 +1,10 @@
 // @ts-check
 
 import sqlite3 from "sqlite3";
-import TSI from "./symbol.js";
 
 /**
  * @typedef {undefined | {
- *   symbol: number,
+ *   decl: number,
  *   begin_row: number,
  *   begin_col: number,
  *   end_row: number,
@@ -15,11 +14,13 @@ import TSI from "./symbol.js";
 
 /**
  * @typedef {undefined | {
+ *   number: number,
  *   kind: string,
  *   name: string,
  *   qualified_type: string,
  *   desugared_type: string,
  *   specs: number,
+ *   class: number,
  * }} Node
  */
 
@@ -32,9 +33,11 @@ export default class Query {
   /**
    *
    * @param {Record<string, string>} dbAlias
+   * @param {string} dbExtension
    */
-  constructor(dbAlias) {
+  constructor(dbAlias, dbExtension) {
     this.dbAlias = dbAlias;
+    this.dbExtension = dbExtension;
   }
 
   /**
@@ -49,7 +52,9 @@ export default class Query {
       }
     }
 
-    return new sqlite3.Database(pathnameWithoutExt(pathname) + ".ast.db");
+    return new sqlite3.Database(
+      pathnameWithoutExt(pathname) + "." + this.dbExtension
+    );
   }
 
   /**
@@ -80,7 +85,7 @@ export default class Query {
           if (err) {
             reject(err);
           } else if (!row) {
-            reject(new Error(`Not found file: ${file}`));
+            reject(new Error(`src: not found file: ${file}`));
           } else {
             resolve(row.number);
           }
@@ -88,32 +93,6 @@ export default class Query {
       );
     });
   }
-
-  /**
-   *
-   * @param {import("sqlite3").Database} db
-   * @param {number} src
-   * @param {import("vscode-languageserver/node").Position} pos
-   */
-  // byLocation(db, src, pos) {
-  //   return new Promise((resolve, reject) => {
-  //     db.get(
-  //       "SELECT * FROM ast WHERE src = $src AND row = $row AND col <= $col AND col + length(name) >= $col",
-  //       {
-  //         $src: src,
-  //         $row: pos.line + 1,
-  //         $col: pos.character + 1,
-  //       },
-  //       (err, row) => {
-  //         if (err) {
-  //           reject(err);
-  //         } else {
-  //           resolve(row);
-  //         }
-  //       }
-  //     );
-  //   });
-  // }
 
   /**
    *
@@ -141,45 +120,36 @@ export default class Query {
   /**
    *
    * @param {import("sqlite3").Database} db
-   * @param {string} ptr
-   * @returns
+   * @param {number} number
+   * @returns {Promise<Node>}
    */
-  // byPtr(db, ptr) {
-  //   return new Promise((resolve, reject) => {
-  //     db.get(
-  //       "SELECT * FROM ast WHERE ptr = $ptr",
-  //       {
-  //         $ptr: ptr,
-  //       },
-  //       (err, row) => {
-  //         if (err) {
-  //           reject(err);
-  //         } else {
-  //           resolve(row);
-  //         }
-  //       }
-  //     );
-  //   });
-  // }
+  node(db, number) {
+    return new Promise((resolve, reject) => {
+      db.get(
+        "SELECT * FROM ast WHERE number = $number",
+        { $number: number },
+        (err, row) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(row);
+          }
+        }
+      );
+    });
+  }
 
   /**
    *
    * @param {import("sqlite3").Database} db
-   * @param {number} src
-   * @param {number} row
-   * @param {number} col
-   * @param {string} token
-   * @param {boolean} [isType]
+   * @param {number} number
+   * @returns {Promise<NonNullable<Node>[]>}
    */
-  node(db, src, row, col, token, isType) {
-    const sql = isType
-      ? "SELECT * FROM ast WHERE begin_src = $src AND begin_row = $row AND begin_col = $col AND qualified_type = $token"
-      : "SELECT * FROM ast WHERE ((src = -1 AND begin_src = $src AND begin_row = $row AND begin_col = $col) OR (src = $src AND row = $row AND col = $col)) AND name = $token";
-
+  children(db, number) {
     return new Promise((resolve, reject) => {
-      db.get(
-        sql,
-        { $src: src, $row: row, $col: col, $token: token },
+      db.all(
+        "SELECT * FROM ast WHERE parent_number = $number",
+        { $number: number },
         (err, rows) => {
           if (err) {
             reject(err);
@@ -190,33 +160,6 @@ export default class Query {
       );
     });
   }
-
-  /**
-   *
-   * @param {import("sqlite3").Database} db
-   * @param {string} type
-   */
-  // byType(db, type) {
-  //   let i = type.length;
-  //   while (i > 0 && isPunctuation(type.charCodeAt(i - 1))) {
-  //     --i;
-  //   }
-  //   return new Promise((resolve, reject) => {
-  //     db.get(
-  //       "SELECT * FROM ast WHERE name = $type",
-  //       {
-  //         $type: type.substring(0, i),
-  //       },
-  //       (err, rows) => {
-  //         if (err) {
-  //           reject(err);
-  //         } else {
-  //           resolve(rows);
-  //         }
-  //       }
-  //     );
-  //   });
-  // }
 }
 
 /**
@@ -226,12 +169,4 @@ export default class Query {
 function pathnameWithoutExt(string) {
   const dot = string.lastIndexOf(".");
   return dot !== -1 ? string.substring(0, dot) : string;
-}
-
-/**
- *
- * @param {number} code
- */
-function isPunctuation(code) {
-  return code === 32 /* ' ' */ || code === 42 /* '*' */;
 }

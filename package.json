@@ -19,6 +19,12 @@
           "default": "off",
           "description": "Traces the communication between VS Code and the language server."
         },
+        "languageServerCC.db.extension": {
+          "scope": "window",
+          "type": "string",
+          "default": "o",
+          "description": "The AST database extension."
+        },
         "languageServerCC.db.alias": {
           "scope": "window",
           "type": "object",

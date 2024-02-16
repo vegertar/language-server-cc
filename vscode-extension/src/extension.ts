@@ -29,6 +29,8 @@ export function activate(context: ExtensionContext) {
     args: [
       "--db.alias",
       JSON.stringify(workspace.getConfiguration("languageServerCC.db.alias")),
+      "--db.extension",
+      workspace.getConfiguration("languageServerCC.db.extension"),
     ],
   };
 

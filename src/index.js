@@ -8,11 +8,11 @@ import {
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import Query from "./query.js";
-import TSI from "./symbol.js";
 
 const argv = minimist(process.argv.slice(2));
 const dbAlias = JSON.parse(argv.db?.alias || "{}");
-const query = new Query(dbAlias);
+const dbExtension = argv.db?.extension || "o";
+const query = new Query(dbAlias, dbExtension);
 
 // Create a connection for the server, using Node's IPC as a transport.
 // Also include all preview / proposed LSP features.
@@ -24,7 +24,7 @@ const connection = createConnection(ProposedFeatures.all);
  **/
 const documents = new Map();
 
-connection.onInitialize((params) => {
+connection.onInitialize(() => {
   return {
     capabilities: {
       hoverProvider: true,
@@ -48,7 +48,7 @@ function markSpecs(specs) {
   for (const mark in specMarks) {
     const spec = specMarks[mark];
     if (specs & spec) {
-      marks.push(mark);
+      marks.push(mark, " ");
     }
   }
   return marks;
@@ -72,8 +72,7 @@ async function getDocument(uri, pathname) {
  *   src: number,
  *   pos: import("vscode-languageserver/node.js").Position,
  *   token: import("./query.js").Token,
- *   type?: import("./query.js").Node,
- *   name?: import("./query.js").Node,
+ *   node?: import("./query.js").Node,
  *   res?: any,
  * }} Value
  */
@@ -99,58 +98,7 @@ async function hoverHandler({ textDocument: { uri }, position: pos }) {
  */
 async function tokenHandler(value) {
   if (value.token) {
-    const {
-      db,
-      src,
-      token: { symbol, begin_row, begin_col, end_row, end_col },
-    } = value;
-
-    let isType = false;
-    switch (TSI[symbol]) {
-      case "alias_sym_type_identifier":
-        isType = true;
-      // falls through
-      case "sym_identifier": {
-        const token = value.doc.getText({
-          start: { line: begin_row - 1, character: begin_col - 1 },
-          end: { line: end_row - 1, character: end_col - 1 },
-        });
-
-        let node = await query.node(
-          db,
-          src,
-          begin_row,
-          begin_col,
-          token,
-          isType
-        );
-
-        // The struct typedef is stored as the name other than the type.
-        if (!node && isType) {
-          node = await query.node(db, src, begin_row, begin_col, token);
-        }
-
-        if (isType) {
-          value.type = node;
-        } else {
-          value.name = node;
-        }
-        break;
-      }
-    }
-  }
-
-  return value;
-}
-
-/**
- *
- * @param {Value} value
- * @returns {Promise<Value>}
- */
-async function typeHandler(value) {
-  if (value.type) {
-    console.debug(value.type);
+    value.node = await query.node(value.db, value.token.decl);
   }
   return value;
 }
@@ -160,22 +108,46 @@ async function typeHandler(value) {
  * @param {Value} value
  * @returns {Promise<Value>}
  */
-async function nameHandler(value) {
-  if (value.name) {
-    const { kind, name, qualified_type, desugared_type, specs } = value.name;
+async function nodeHandler(value) {
+  console.debug(value.token, value.node);
+  if (value.node) {
+    const { number, kind, name, qualified_type, desugared_type, specs } =
+      value.node;
     /** @type {string[]} */
     const marks = markSpecs(specs);
-    if (kind === "TypedefDecl") {
-      marks.push(`_typedef_`);
+    switch (kind) {
+      case "TypedefDecl":
+        marks.push(`_typedef_ `);
+        break;
+      case "FieldDecl":
+        marks.push(`_field_ `);
+        break;
+      case "RecordDecl":
+        switch (value.node.class) {
+          case 1:
+            marks.push(`_struct_ `);
+            break;
+        }
+        break;
     }
-    marks.push(`__${name}__:`, `_${qualified_type}_`);
-    if (desugared_type && desugared_type !== qualified_type) {
-      marks.push(`\`${desugared_type}\``);
+    marks.push(`__${name}__`);
+    if (value.node.class) {
+      const children = await query.children(value.db, number);
+      if (children.length) marks.push("\n\n---");
+      for (const node of children) {
+        const { res } = await nodeHandler({ ...value, node });
+        marks.push("\n\n", res.contents.value);
+      }
+    } else {
+      marks.push(`: _${qualified_type}_`);
+      if (desugared_type && desugared_type !== qualified_type) {
+        marks.push(` \`${desugared_type}\``);
+      }
     }
     value.res = /** @type {import("vscode-languageserver/node.js").Hover } */ ({
       contents: {
         kind: "markdown",
-        value: marks.join(" "),
+        value: marks.join(""),
       },
     });
   }
@@ -184,7 +156,7 @@ async function nameHandler(value) {
 
 connection.onHover(async (param) => {
   let value = /** @type {any} */ (param);
-  for (const handler of [hoverHandler, tokenHandler, typeHandler, nameHandler]) {
+  for (const handler of [hoverHandler, tokenHandler, nodeHandler]) {
     value = await handler(value);
   }
   const res = value.res;
