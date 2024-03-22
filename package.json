@@ -22,7 +22,7 @@
         "languageServerCC.db.extension": {
           "scope": "window",
           "type": "string",
-          "default": "o",
+          "default": "db",
           "description": "The AST database extension."
         },
         "languageServerCC.db.alias": {

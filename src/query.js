@@ -5,11 +5,20 @@ import sqlite3 from "sqlite3";
 /**
  * @typedef {undefined | {
  *   decl: number,
+ *   src: number,
+ *   begin_row: number,
+ *   begin_col: number,
+ *   offset: number,
+ * }} Token
+ */
+
+/**
+ * @typedef {{
  *   begin_row: number,
  *   begin_col: number,
  *   end_row: number,
  *   end_col: number,
- * }} Token
+ * }} Range
  */
 
 /**
@@ -104,8 +113,30 @@ export default class Query {
   token(db, src, pos) {
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT * FROM cst WHERE src = $src AND ((begin_row = $row AND begin_col <= $col) OR (begin_row < $row)) AND ((end_row = $row AND end_col > $col) OR (end_row > $row))",
+        "SELECT * FROM tok WHERE src = $src AND begin_row = $row AND begin_col = $col",
         { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   *
+   * @param {import("sqlite3").Database} db
+   * @param {number} src
+   * @returns {Promise<Range[]>}
+   */
+  expansions(db, src) {
+    return new Promise((resolve, reject) => {
+      db.all(
+        "SELECT * FROM loc WHERE begin_src = $src AND end_src = $src",
+        { $src: src },
         (err, rows) => {
           if (err) {
             reject(err);
