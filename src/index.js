@@ -63,28 +63,25 @@ function getIdentifier(text) {
   return text.substring(0, i);
 }
 
-connection.onCodeLens(async ({ textDocument: { uri } }) => {
-  const { doc, db, src } = await getUriInfo(uri);
+connection.onCodeLens(async ({ textDocument }) => {
+  const { doc, db, src } = await getUriInfo(textDocument.uri);
   const ranges = await query.expansions(db, src);
   return ranges.map((x) => {
     const range = {
       start: { line: x.begin_row - 1, character: x.begin_col - 1 },
       end: { line: x.end_row - 1, character: x.end_col - 1 },
     };
-
     const text = doc.getText(range);
-    return { range, data: getIdentifier(text) };
-  });
-});
 
-connection.onCodeLensResolve(async (codeLens) => {
-  return {
-    range: codeLens.range,
-    command: {
-      title: codeLens.data,
-      command: "expands-macros",
-    },
-  };
+    return {
+      range,
+      command: {
+        title: getIdentifier(text),
+        command: "languageServerCC.showExpansions",
+        arguments: [textDocument, range],
+      },
+    };
+  });
 });
 
 const specMarks = {
@@ -93,6 +90,10 @@ const specMarks = {
   4: new mark.Emphasis("inline"),
   8: new mark.Emphasis("const"),
   16: new mark.Emphasis("volatile"),
+};
+
+const specs = {
+  hasLeadingSpace: 32,
 };
 
 /**
@@ -123,6 +124,7 @@ async function getDocument(uri, pathname) {
   if (!document) {
     const file = await open(pathname);
     const content = await file.readFile({ encoding: "utf8" });
+    await file.close();
     document = TextDocument.create(uri, "", 0, content);
     documents.set(uri, document);
   }
@@ -169,6 +171,7 @@ function getTokenHead(doc, start) {
  *   db: import("sqlite3").Database,
  *   src: number,
  *   pos: import("vscode-languageserver/node.js").Position,
+ *   loc: import("vscode-languageserver/node.js").Position | null,
  *   token: import("./query.js").Token,
  *   node?: import("./query.js").Node,
  *   mark?: mark.Mark,
@@ -180,11 +183,12 @@ function getTokenHead(doc, start) {
  * @param {import("vscode-languageserver/node.js").HoverParams} param0
  * @returns {Promise<Value>}
  */
-async function hoverHandler({ textDocument: { uri }, position: pos }) {
+async function hoverHandler({ textDocument: { uri }, position }) {
   const info = await getUriInfo(uri);
-  pos = getTokenHead(info.doc, pos);
-  const token = await query.token(info.db, info.src, pos);
-  return { ...info, pos, token };
+  const pos = getTokenHead(info.doc, position);
+  const loc = await query.loc(info.db, info.src, pos);
+  const token = await query.token(info.db, info.src, loc || pos);
+  return { ...info, pos, loc, token };
 }
 
 /**
@@ -205,10 +209,13 @@ async function tokenHandler(value) {
  * @returns {Promise<Value>}
  */
 async function nodeHandler(value) {
-  console.debug(value.token, value.node);
-  if (value.node) {
-    const marks = markSpecs(value.node.specs);
-    switch (value.node.kind) {
+  const { db, token, node } = value;
+  console.debug(token, node);
+
+  if (node) {
+    const marks = markSpecs(node.specs);
+
+    switch (node.kind) {
       case "TypedefDecl":
         marks.push(new mark.Emphasis("typedef"), mark.space);
         break;
@@ -216,29 +223,90 @@ async function nodeHandler(value) {
         marks.push(new mark.Emphasis("field"), mark.space);
         break;
       case "RecordDecl":
-        switch (value.node.class) {
+        switch (node.class) {
           case 1:
             marks.push(new mark.Emphasis("struct"), mark.space);
             break;
         }
         break;
+      case "MacroDecl":
+        marks.push(
+          new mark.Emphasis("#define"),
+          mark.space,
+          new mark.Strong(
+            (await query.node(db, node.parent_number))?.name || "Never"
+          )
+        );
+        node.sqname && marks.push(new mark.Strong(node.sqname));
+        break;
+      case "ExpansionDecl":
+        if (node.ref_ptr) {
+          const v = await nodeHandler({
+            ...value,
+            node: await query.node(db, node.ref_ptr),
+          });
+          if (v.mark) {
+            marks.push(v.mark, mark.newLine);
+            const nodes = await query.range(db, node.number, node.final_number);
+            /** @type {Map<number, number>} */
+            const indents = new Map();
+            indents.set(nodes[0].number, 0);
+            for (let i = 1, n = nodes.length; i < n; ++i) {
+              const parentIndent = indents.get(nodes[i].parent_number);
+              indents.set(
+                nodes[i].number,
+                parentIndent == undefined ? 0 : parentIndent + 2
+              );
+            }
+
+            for (let i = 0, n = nodes.length; i < n; ) {
+              marks.push(
+                new mark.Indent(indents.get(nodes[i].number) || 0),
+                new mark.BulletListItem(nodes[i].name || "Never"),
+                mark.newLine
+              );
+
+              while (++i < n && nodes[i].kind === "Token") {
+                const indent = indents.get(nodes[i].number) || 0;
+                const codes = [nodes[i].name || "Never"];
+                while (
+                  ++i < n &&
+                  nodes[i].kind === "Token" &&
+                  indents.get(nodes[i].number) == indent
+                ) {
+                  const node = nodes[i];
+                  if (node.specs & specs.hasLeadingSpace) codes.push(" ");
+                  codes.push(node.name || "Never");
+                }
+
+                marks.push(new mark.CodeBlock(codes, indent, "c"));
+                --i;
+              }
+            }
+          }
+        }
+        break;
     }
-    marks.push(new mark.Strong(value.node.name));
-    if (value.node.class) {
-      const children = await query.children(value.db, value.node.number);
-      if (children.length)
-        marks.push(mark.lineEnding, mark.lineEnding, mark.thematicBreak);
-      for (const node of children) {
-        const v = await nodeHandler({ ...value, node });
-        if (v.mark) marks.push(mark.lineEnding, mark.lineEnding, v.mark);
-      }
-    } else {
-      const { qualified_type, desugared_type } = value.node;
-      marks.push(mark.colon, mark.space, new mark.Emphasis(qualified_type));
-      if (desugared_type && desugared_type !== qualified_type) {
-        marks.push(mark.space, new mark.Code(desugared_type));
+
+    if (node.kind !== "ExpansionDecl") {
+      node.name && marks.push(new mark.Strong(node.name));
+
+      if (node.class) {
+        const children = await query.children(db, node.number);
+        if (children.length) marks.push(mark.newLine, mark.thematicBreak);
+        for (const node of children) {
+          const v = await nodeHandler({ ...value, node });
+          if (v.mark) marks.push(mark.lineEnding, mark.lineEnding, v.mark);
+        }
+      } else {
+        const { qualified_type, desugared_type } = node;
+        if (qualified_type)
+          marks.push(mark.colon, mark.space, new mark.Emphasis(qualified_type));
+        if (desugared_type && desugared_type !== qualified_type)
+          marks.push(mark.space, new mark.Code(desugared_type));
       }
     }
+
     value.mark = new mark.Mark(marks);
   }
   return value;

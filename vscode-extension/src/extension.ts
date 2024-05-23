@@ -4,7 +4,13 @@
  * ------------------------------------------------------------------------------------------ */
 
 import * as path from "path";
-import { workspace, ExtensionContext } from "vscode";
+import {
+  commands,
+  window,
+  workspace,
+  ExtensionContext,
+  Disposable,
+} from "vscode";
 
 import {
   LanguageClient,
@@ -14,6 +20,7 @@ import {
 } from "vscode-languageclient/node";
 
 let client: LanguageClient;
+let disposables: Disposable[];
 
 export function activate(context: ExtensionContext) {
   // The server is implemented in node
@@ -23,14 +30,15 @@ export function activate(context: ExtensionContext) {
   // --inspect=6009: runs the server in Node's Inspector mode so VS Code can attach to the server for debugging
   const debugOptions = { execArgv: ["--nolazy", "--inspect=6009"] };
 
+  const config = workspace.getConfiguration("languageServerCC");
   const nodeModule = {
     module: serverModule,
     transport: TransportKind.ipc,
     args: [
       "--db.alias",
-      JSON.stringify(workspace.getConfiguration("languageServerCC.db.alias")),
+      JSON.stringify(config.get("db.alias")),
       "--db.extension",
-      workspace.getConfiguration("languageServerCC.db.extension"),
+      config.get("db.extension", "db"),
     ],
   };
 
@@ -64,11 +72,23 @@ export function activate(context: ExtensionContext) {
 
   // Start the client. This will also launch the server
   client.start();
+
+  disposables = [
+    commands.registerCommand(
+      "languageServerCC.showExpansions",
+      async (...args: any[]) => {
+        window.showInformationMessage(
+          `CodeLens action clicked with args=${args}`
+        );
+      }
+    ),
+  ];
 }
 
 export function deactivate(): Thenable<void> | undefined {
   if (!client) {
     return undefined;
   }
+  disposables?.forEach((item) => item.dispose());
   return client.stop();
 }

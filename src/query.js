@@ -24,12 +24,16 @@ import sqlite3 from "sqlite3";
 /**
  * @typedef {undefined | {
  *   number: number,
+ *   parent_number: number,
+ *   final_number: number,
  *   kind: string,
- *   name: string,
+ *   name: string | null | undefined,
+ *   sqname: string | null | undefined,
  *   qualified_type: string,
  *   desugared_type: string,
  *   specs: number,
  *   class: number,
+ *   ref_ptr: string | null | undefined,
  * }} Node
  */
 
@@ -104,6 +108,35 @@ export default class Query {
   }
 
   /**
+   * Get the correct token location if the given position is within a macro expansion.
+   * @param {import("sqlite3").Database} db
+   * @param {number} src
+   * @param {import("vscode-languageserver/node").Position} pos
+   * @returns {Promise<import("vscode-languageserver/node").Position | null>}
+   */
+  async loc(db, src, pos) {
+    /**
+     * @type {Range | undefined}
+     */
+    const range = await new Promise((resolve, reject) => {
+      db.get(
+        "SELECT * FROM loc WHERE begin_src = $src AND end_src = $src AND ((begin_row = $row AND begin_col <= $col) OR (begin_row < $row)) AND ((end_row = $row AND end_col > $col) OR (end_row > $row))",
+        { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
+        (err, row) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(row);
+          }
+        }
+      );
+    });
+    return range
+      ? { line: range.begin_row - 1, character: range.begin_col - 1 }
+      : null;
+  }
+
+  /**
    *
    * @param {import("sqlite3").Database} db
    * @param {number} src
@@ -115,11 +148,11 @@ export default class Query {
       db.get(
         "SELECT * FROM tok WHERE src = $src AND begin_row = $row AND begin_col = $col",
         { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
-        (err, rows) => {
+        (err, row) => {
           if (err) {
             reject(err);
           } else {
-            resolve(rows);
+            resolve(row);
           }
         }
       );
@@ -151,14 +184,16 @@ export default class Query {
   /**
    *
    * @param {import("sqlite3").Database} db
-   * @param {number} number
+   * @param {number | string} numberOrPtr
    * @returns {Promise<Node>}
    */
-  node(db, number) {
+  node(db, numberOrPtr) {
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT * FROM ast WHERE number = $number",
-        { $number: number },
+        typeof numberOrPtr === "string"
+          ? "SELECT * FROM ast WHERE ptr = $v"
+          : "SELECT * FROM ast WHERE number = $v",
+        { $v: numberOrPtr },
         (err, row) => {
           if (err) {
             reject(err);
@@ -181,6 +216,29 @@ export default class Query {
       db.all(
         "SELECT * FROM ast WHERE parent_number = $number",
         { $number: number },
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   *
+   * @param {import("sqlite3").Database} db
+   * @param {number} first
+   * @param {number} last
+   * @returns {Promise<NonNullable<Node>[]>}
+   */
+  range(db, first, last) {
+    return new Promise((resolve, reject) => {
+      db.all(
+        "SELECT * FROM ast WHERE number >= $first AND number <= $last",
+        { $first: first, $last: last },
         (err, rows) => {
           if (err) {
             reject(err);
