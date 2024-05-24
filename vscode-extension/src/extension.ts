@@ -54,8 +54,8 @@ export function activate(context: ExtensionContext) {
 
   // Options to control the language client
   const clientOptions: LanguageClientOptions = {
-    // Register the server for plain text documents
-    documentSelector: [{ scheme: "file", language: "c" }],
+    // Register the server for C documents
+    documentSelector: [{ language: "c" }],
     synchronize: {
       // Notify the server about file changes to '.clientrc files contained in the workspace
       fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
@@ -73,16 +73,7 @@ export function activate(context: ExtensionContext) {
   // Start the client. This will also launch the server
   client.start();
 
-  disposables = [
-    commands.registerCommand(
-      "languageServerCC.showExpansions",
-      async (...args: any[]) => {
-        window.showInformationMessage(
-          `CodeLens action clicked with args=${args}`
-        );
-      }
-    ),
-  ];
+  disposables = [];
 }
 
 export function deactivate(): Thenable<void> | undefined {

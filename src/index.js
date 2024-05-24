@@ -15,29 +15,6 @@ const dbAlias = JSON.parse(argv.db?.alias || "{}");
 const dbExtension = argv.db?.extension || "db";
 const query = new Query(dbAlias, dbExtension);
 
-// Create a connection for the server, using Node's IPC as a transport.
-// Also include all preview / proposed LSP features.
-const connection = createConnection(ProposedFeatures.all);
-
-/**
- * Create a simple text document manager.
- * @type {Map<import("vscode-languageserver/node.js").URI, import("vscode-languageserver-textdocument").TextDocument>}
- **/
-const documents = new Map();
-
-connection.onInitialize(() => {
-  return {
-    capabilities: {
-      hoverProvider: true,
-      codeLensProvider: {
-        resolveProvider: true,
-      },
-    },
-  };
-});
-
-connection.onInitialized(() => {});
-
 /**
  *
  * @param {string} uri
@@ -62,27 +39,6 @@ function getIdentifier(text) {
   }
   return text.substring(0, i);
 }
-
-connection.onCodeLens(async ({ textDocument }) => {
-  const { doc, db, src } = await getUriInfo(textDocument.uri);
-  const ranges = await query.expansions(db, src);
-  return ranges.map((x) => {
-    const range = {
-      start: { line: x.begin_row - 1, character: x.begin_col - 1 },
-      end: { line: x.end_row - 1, character: x.end_col - 1 },
-    };
-    const text = doc.getText(range);
-
-    return {
-      range,
-      command: {
-        title: getIdentifier(text),
-        command: "languageServerCC.showExpansions",
-        arguments: [textDocument, range],
-      },
-    };
-  });
-});
 
 const specMarks = {
   1: new mark.Emphasis("extern"),
@@ -174,16 +130,17 @@ function getTokenHead(doc, start) {
  *   loc: import("vscode-languageserver/node.js").Position | null,
  *   token: import("./query.js").Token,
  *   node?: import("./query.js").Node,
+ *   link?: import("./query.js").Node[],
  *   mark?: mark.Mark,
  * }} Value
  */
 
 /**
  *
- * @param {import("vscode-languageserver/node.js").HoverParams} param0
+ * @param {import("vscode-languageserver/node.js").TextDocumentPositionParams} param0
  * @returns {Promise<Value>}
  */
-async function hoverHandler({ textDocument: { uri }, position }) {
+async function positionHandler({ textDocument: { uri }, position }) {
   const info = await getUriInfo(uri);
   const pos = getTokenHead(info.doc, position);
   const loc = await query.loc(info.db, info.src, pos);
@@ -208,9 +165,8 @@ async function tokenHandler(value) {
  * @param {Value} value
  * @returns {Promise<Value>}
  */
-async function nodeHandler(value) {
-  const { db, token, node } = value;
-  console.debug(token, node);
+async function hoverHandler(value) {
+  const { db, node } = value;
 
   if (node) {
     const marks = markSpecs(node.specs);
@@ -241,7 +197,7 @@ async function nodeHandler(value) {
         break;
       case "ExpansionDecl":
         if (node.ref_ptr) {
-          const v = await nodeHandler({
+          const v = await hoverHandler({
             ...value,
             node: await query.node(db, node.ref_ptr),
           });
@@ -295,7 +251,7 @@ async function nodeHandler(value) {
         const children = await query.children(db, node.number);
         if (children.length) marks.push(mark.newLine, mark.thematicBreak);
         for (const node of children) {
-          const v = await nodeHandler({ ...value, node });
+          const v = await hoverHandler({ ...value, node });
           if (v.mark) marks.push(mark.lineEnding, mark.lineEnding, v.mark);
         }
       } else {
@@ -315,6 +271,54 @@ async function nodeHandler(value) {
 /**
  *
  * @param {Value} value
+ * @returns {Promise<Value>}
+ */
+async function definitionHandler(value) {
+  const { db, node } = value;
+
+  if (node) {
+    value.link = [];
+    if (node.ref_ptr) {
+      const decl = await query.node(db, node.ref_ptr);
+      if (decl) value.link.push(decl);
+    } else value.link.push(node);
+  }
+
+  return value;
+}
+
+/**
+ *
+ * @param {Value} value
+ * @returns {Promise<import("vscode-languageserver/node.js").Location[] | null>}
+ */
+async function linkHandler(value) {
+  if (value.link) {
+    /** @type {import("vscode-languageserver/node.js").Location[]} */
+    const links = [];
+    for (const node of value.link) {
+      links.push({
+        uri: await query.uri(value.db, node.begin_src),
+        range: {
+          start: {
+            line: node.begin_row - 1,
+            character: node.begin_col - 1,
+          },
+          end: {
+            line: node.end_row - 1,
+            character: node.end_col - 1,
+          },
+        },
+      });
+    }
+    return links;
+  }
+  return null;
+}
+
+/**
+ *
+ * @param {Value} value
  * @returns {import("vscode-languageserver/node.js").Hover | null}
  */
 function markHandler(value) {
@@ -329,12 +333,49 @@ function markHandler(value) {
   return null;
 }
 
+// Create a connection for the server, using Node's IPC as a transport.
+// Also include all preview / proposed LSP features.
+const connection = createConnection(ProposedFeatures.all);
+
+/**
+ * Create a simple text document manager.
+ * @type {Map<import("vscode-languageserver/node.js").URI, import("vscode-languageserver-textdocument").TextDocument>}
+ **/
+const documents = new Map();
+
+connection.onInitialize(() => {
+  return {
+    capabilities: {
+      hoverProvider: true,
+      declarationProvider: true,
+      definitionProvider: true,
+      typeDefinitionProvider: true,
+      implementationProvider: true,
+    },
+  };
+});
+
+connection.onInitialized(() => {});
+
+connection.onDefinition(async (param) => {
+  let value = /** @type {any} */ (param);
+  for (const handler of [
+    positionHandler,
+    tokenHandler,
+    definitionHandler,
+    linkHandler,
+  ]) {
+    value = await handler(value);
+  }
+  return value;
+});
+
 connection.onHover(async (param) => {
   let value = /** @type {any} */ (param);
   for (const handler of [
-    hoverHandler,
+    positionHandler,
     tokenHandler,
-    nodeHandler,
+    hoverHandler,
     markHandler,
   ]) {
     value = await handler(value);

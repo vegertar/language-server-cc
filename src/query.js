@@ -22,7 +22,7 @@ import sqlite3 from "sqlite3";
  */
 
 /**
- * @typedef {undefined | {
+ * @typedef {{
  *   number: number,
  *   parent_number: number,
  *   final_number: number,
@@ -34,6 +34,15 @@ import sqlite3 from "sqlite3";
  *   specs: number,
  *   class: number,
  *   ref_ptr: string | null | undefined,
+ *   begin_src: number,
+ *   begin_row: number,
+ *   begin_col: number,
+ *   end_src: number,
+ *   end_row: number,
+ *   end_col: number,
+ *   src: number,
+ *   row: number,
+ *   col: number,
  * }} Node
  */
 
@@ -105,6 +114,31 @@ export default class Query {
         }
       );
     });
+  }
+
+  /**
+   *
+   * @param {import("sqlite3").Database} db
+   * @param {number} src
+   * @returns {Promise<string>}
+   */
+  async uri(db, src) {
+    const filename = await new Promise((resolve, reject) => {
+      db.get(
+        "SELECT filename FROM src WHERE number = $src",
+        { $src: src },
+        (err, row) => {
+          if (err) {
+            reject(err);
+          } else if (!row) {
+            reject(new Error(`src: not found src: ${src}`));
+          } else {
+            resolve(row.filename);
+          }
+        }
+      );
+    });
+    return "file://" + filename;
   }
 
   /**
@@ -185,7 +219,7 @@ export default class Query {
    *
    * @param {import("sqlite3").Database} db
    * @param {number | string} numberOrPtr
-   * @returns {Promise<Node>}
+   * @returns {Promise<Node | undefined>}
    */
   node(db, numberOrPtr) {
     return new Promise((resolve, reject) => {
@@ -209,7 +243,7 @@ export default class Query {
    *
    * @param {import("sqlite3").Database} db
    * @param {number} number
-   * @returns {Promise<NonNullable<Node>[]>}
+   * @returns {Promise<Node[]>}
    */
   children(db, number) {
     return new Promise((resolve, reject) => {
@@ -232,7 +266,7 @@ export default class Query {
    * @param {import("sqlite3").Database} db
    * @param {number} first
    * @param {number} last
-   * @returns {Promise<NonNullable<Node>[]>}
+   * @returns {Promise<Node[]>}
    */
   range(db, first, last) {
     return new Promise((resolve, reject) => {

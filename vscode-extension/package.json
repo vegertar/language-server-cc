@@ -10,13 +10,7 @@
     "url": "https://github.com/Microsoft/vscode-extension-samples"
   },
   "contributes": {
-    "commands": [
-      {
-        "title": "Show Expansions",
-        "command": "languageServerCC.showExpansions",
-        "category": "languageServerCC"
-      }
-    ]
+    "commands": []
   },
   "scripts": {
     "compile": "tsc -b",
