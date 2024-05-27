@@ -47,60 +47,39 @@ import sqlite3 from "sqlite3";
  */
 
 export default class Query {
-  /**
-   * @type {Map<string, import("sqlite3").Database> }
-   */
-  dbCaches = new Map();
+  /** @type {string} */
+  #tu;
+
+  /** @type {Map<string, import("sqlite3").Database>} */
+  #allDatabases;
+
+  /** @type {import("sqlite3").Database} */
+  db;
 
   /**
-   *
-   * @param {Record<string, string>} dbAlias
-   * @param {string} dbExtension
+   * @param {string} path
    */
-  constructor(dbAlias, dbExtension) {
-    this.dbAlias = dbAlias;
-    this.dbExtension = dbExtension;
-  }
-
-  /**
-   * @private
-   * @param {string} pathname
-   */
-  openDB(pathname) {
-    for (const key in this.dbAlias) {
-      if (pathname.search(key) !== -1) {
-        pathname = pathname.replace(key, this.dbAlias[key]);
-        break;
+  set tu(path) {
+    if (path !== this.#tu) {
+      let db = this.#allDatabases.get(path);
+      if (!db) {
+        db = new sqlite3.Database(path);
+        this.#allDatabases.set(path, db);
       }
-    }
 
-    return new sqlite3.Database(
-      pathnameWithoutExt(pathname) + "." + this.dbExtension
-    );
+      this.db = db;
+      this.#tu = path;
+    }
   }
 
   /**
    *
-   * @param {string} pathname
-   */
-  db(pathname) {
-    let db = this.dbCaches.get(pathname);
-    if (!db) {
-      db = this.openDB(pathname);
-      this.dbCaches.set(pathname, db);
-    }
-    return db;
-  }
-
-  /**
-   *
-   * @param {import("sqlite3").Database} db
    * @param {string} file
    * @returns {Promise<number>}
    */
-  src(db, file) {
+  src(file) {
     return new Promise((resolve, reject) => {
-      db.get(
+      this.db.get(
         "SELECT number FROM src WHERE filename = $file",
         { $file: file },
         (err, row) => {
@@ -118,13 +97,12 @@ export default class Query {
 
   /**
    *
-   * @param {import("sqlite3").Database} db
    * @param {number} src
    * @returns {Promise<string>}
    */
-  async uri(db, src) {
+  async uri(src) {
     const filename = await new Promise((resolve, reject) => {
-      db.get(
+      this.db.get(
         "SELECT filename FROM src WHERE number = $src",
         { $src: src },
         (err, row) => {
@@ -143,17 +121,16 @@ export default class Query {
 
   /**
    * Get the correct token location if the given position is within a macro expansion.
-   * @param {import("sqlite3").Database} db
    * @param {number} src
    * @param {import("vscode-languageserver/node").Position} pos
    * @returns {Promise<import("vscode-languageserver/node").Position | null>}
    */
-  async loc(db, src, pos) {
+  async loc(src, pos) {
     /**
      * @type {Range | undefined}
      */
     const range = await new Promise((resolve, reject) => {
-      db.get(
+      this.db.get(
         "SELECT * FROM loc WHERE begin_src = $src AND end_src = $src AND ((begin_row = $row AND begin_col <= $col) OR (begin_row < $row)) AND ((end_row = $row AND end_col > $col) OR (end_row > $row))",
         { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
         (err, row) => {
@@ -172,14 +149,13 @@ export default class Query {
 
   /**
    *
-   * @param {import("sqlite3").Database} db
    * @param {number} src
    * @param {import("vscode-languageserver/node").Position} pos
    * @returns {Promise<Token>}
    */
-  token(db, src, pos) {
+  token(src, pos) {
     return new Promise((resolve, reject) => {
-      db.get(
+      this.db.get(
         "SELECT * FROM tok WHERE src = $src AND begin_row = $row AND begin_col = $col",
         { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
         (err, row) => {
@@ -195,13 +171,12 @@ export default class Query {
 
   /**
    *
-   * @param {import("sqlite3").Database} db
    * @param {number} src
    * @returns {Promise<Range[]>}
    */
-  expansions(db, src) {
+  expansions(src) {
     return new Promise((resolve, reject) => {
-      db.all(
+      this.db.all(
         "SELECT * FROM loc WHERE begin_src = $src AND end_src = $src",
         { $src: src },
         (err, rows) => {
@@ -217,13 +192,12 @@ export default class Query {
 
   /**
    *
-   * @param {import("sqlite3").Database} db
    * @param {number | string} numberOrPtr
    * @returns {Promise<Node | undefined>}
    */
-  node(db, numberOrPtr) {
+  node(numberOrPtr) {
     return new Promise((resolve, reject) => {
-      db.get(
+      this.db.get(
         typeof numberOrPtr === "string"
           ? "SELECT * FROM ast WHERE ptr = $v"
           : "SELECT * FROM ast WHERE number = $v",
@@ -241,13 +215,12 @@ export default class Query {
 
   /**
    *
-   * @param {import("sqlite3").Database} db
    * @param {number} number
    * @returns {Promise<Node[]>}
    */
-  children(db, number) {
+  children(number) {
     return new Promise((resolve, reject) => {
-      db.all(
+      this.db.all(
         "SELECT * FROM ast WHERE parent_number = $number",
         { $number: number },
         (err, rows) => {
@@ -263,14 +236,13 @@ export default class Query {
 
   /**
    *
-   * @param {import("sqlite3").Database} db
    * @param {number} first
    * @param {number} last
    * @returns {Promise<Node[]>}
    */
-  range(db, first, last) {
+  range(first, last) {
     return new Promise((resolve, reject) => {
-      db.all(
+      this.db.all(
         "SELECT * FROM ast WHERE number >= $first AND number <= $last",
         { $first: first, $last: last },
         (err, rows) => {
@@ -283,13 +255,4 @@ export default class Query {
       );
     });
   }
-}
-
-/**
- *
- * @param {string} string
- */
-function pathnameWithoutExt(string) {
-  const dot = string.lastIndexOf(".");
-  return dot !== -1 ? string.substring(0, dot) : string;
 }

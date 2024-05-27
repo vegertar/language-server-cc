@@ -9,20 +9,25 @@ import {
   window,
   workspace,
   ExtensionContext,
-  Disposable,
+  StatusBarAlignment,
+  StatusBarItem,
 } from "vscode";
-
+import * as nls from "vscode-nls";
 import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
   TransportKind,
 } from "vscode-languageclient/node";
+import { getAllTUPaths } from "./utils";
 
-let client: LanguageClient;
-let disposables: Disposable[];
+nls.config({
+  messageFormat: nls.MessageFormat.bundle,
+  bundleFormat: nls.BundleFormat.standalone,
+})();
+const localize: nls.LocalizeFunc = nls.loadMessageBundle();
 
-export function activate(context: ExtensionContext) {
+function createClient(context: ExtensionContext) {
   // The server is implemented in node
   const serverModule = context.asAbsolutePath(path.join("src", "index.js"));
 
@@ -30,16 +35,10 @@ export function activate(context: ExtensionContext) {
   // --inspect=6009: runs the server in Node's Inspector mode so VS Code can attach to the server for debugging
   const debugOptions = { execArgv: ["--nolazy", "--inspect=6009"] };
 
-  const config = workspace.getConfiguration("languageServerCC");
   const nodeModule = {
     module: serverModule,
     transport: TransportKind.ipc,
-    args: [
-      "--db.alias",
-      JSON.stringify(config.get("db.alias")),
-      "--db.extension",
-      config.get("db.extension", "db"),
-    ],
+    args: [],
   };
 
   // If the extension is launched in debug mode then the debug server options are used
@@ -63,7 +62,7 @@ export function activate(context: ExtensionContext) {
   };
 
   // Create the language client and start the client.
-  client = new LanguageClient(
+  const client = new LanguageClient(
     "languageServerCC",
     "Language Server CC",
     serverOptions,
@@ -73,13 +72,45 @@ export function activate(context: ExtensionContext) {
   // Start the client. This will also launch the server
   client.start();
 
-  disposables = [];
+  context.subscriptions.push(client);
 }
 
-export function deactivate(): Thenable<void> | undefined {
-  if (!client) {
-    return undefined;
-  }
-  disposables?.forEach((item) => item.dispose());
-  return client.stop();
+function selectTU(context: ExtensionContext) {
+  const id = "languageServerCC.selectTU";
+  context.subscriptions.push(
+    commands.registerCommand(id, async () => {
+      const workspaceFolder = workspace.workspaceFolders?.[0];
+      const folderPath = workspaceFolder.uri.fsPath;
+      const items = workspaceFolder ? await getAllTUPaths(folderPath) : [];
+      const tu = await window.showQuickPick(
+        items.map((file) => path.relative(folderPath, file)),
+        {
+          placeHolder: localize("select.tu", "Select Translation Unit"),
+        }
+      );
+      if (tu)
+        await workspace.getConfiguration().update("languageServerCC.tu", tu);
+    })
+  );
+  return id;
+}
+
+function updateStatus(item: StatusBarItem) {
+  item.text = "TU: " + workspace.getConfiguration().get("languageServerCC.tu");
+  item.show();
+}
+
+async function createStatus(context: ExtensionContext) {
+  const item = window.createStatusBarItem(StatusBarAlignment.Left);
+  item.command = selectTU(context);
+  context.subscriptions.push(
+    item,
+    workspace.onDidChangeConfiguration(() => updateStatus(item))
+  );
+  updateStatus(item);
+}
+
+export async function activate(context: ExtensionContext) {
+  createClient(context);
+  createStatus(context);
 }

@@ -1,19 +1,16 @@
 // @ts-check
 
 import { open } from "node:fs/promises";
-import minimist from "minimist";
 import {
   createConnection,
   ProposedFeatures,
+  DidChangeConfigurationNotification,
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import Query from "./query.js";
 import * as mark from "./mark.js";
 
-const argv = minimist(process.argv.slice(2));
-const dbAlias = JSON.parse(argv.db?.alias || "{}");
-const dbExtension = argv.db?.extension || "db";
-const query = new Query(dbAlias, dbExtension);
+const query = new Query();
 
 /**
  *
@@ -22,22 +19,8 @@ const query = new Query(dbAlias, dbExtension);
 async function getUriInfo(uri) {
   const pathname = new URL(uri).pathname;
   const doc = await getDocument(uri, pathname);
-  const db = query.db(pathname);
-  const src = await query.src(db, pathname);
-  return { doc, db, src };
-}
-
-/**
- *
- * @param {string} text
- * @returns
- */
-function getIdentifier(text) {
-  let i = 0;
-  while (i < text.length && isPartOfIdentifier(text.charCodeAt(i))) {
-    ++i;
-  }
-  return text.substring(0, i);
+  const src = await query.src(pathname);
+  return { doc, src };
 }
 
 const specMarks = {
@@ -124,7 +107,6 @@ function getTokenHead(doc, start) {
 /**
  * @typedef {{
  *   doc: import("vscode-languageserver-textdocument").TextDocument,
- *   db: import("sqlite3").Database,
  *   src: number,
  *   pos: import("vscode-languageserver/node.js").Position,
  *   loc: import("vscode-languageserver/node.js").Position | null,
@@ -143,8 +125,8 @@ function getTokenHead(doc, start) {
 async function positionHandler({ textDocument: { uri }, position }) {
   const info = await getUriInfo(uri);
   const pos = getTokenHead(info.doc, position);
-  const loc = await query.loc(info.db, info.src, pos);
-  const token = await query.token(info.db, info.src, loc || pos);
+  const loc = await query.loc(info.src, pos);
+  const token = await query.token(info.src, loc || pos);
   return { ...info, pos, loc, token };
 }
 
@@ -155,7 +137,7 @@ async function positionHandler({ textDocument: { uri }, position }) {
  */
 async function tokenHandler(value) {
   if (value.token) {
-    value.node = await query.node(value.db, value.token.decl);
+    value.node = await query.node(value.token.decl);
   }
   return value;
 }
@@ -166,7 +148,7 @@ async function tokenHandler(value) {
  * @returns {Promise<Value>}
  */
 async function hoverHandler(value) {
-  const { db, node } = value;
+  const { node } = value;
 
   if (node) {
     const marks = markSpecs(node.specs);
@@ -190,7 +172,7 @@ async function hoverHandler(value) {
           new mark.Emphasis("#define"),
           mark.space,
           new mark.Strong(
-            (await query.node(db, node.parent_number))?.name || "Never"
+            (await query.node(node.parent_number))?.name || "Never"
           )
         );
         node.sqname && marks.push(new mark.Strong(node.sqname));
@@ -199,11 +181,11 @@ async function hoverHandler(value) {
         if (node.ref_ptr) {
           const v = await hoverHandler({
             ...value,
-            node: await query.node(db, node.ref_ptr),
+            node: await query.node(node.ref_ptr),
           });
           if (v.mark) {
             marks.push(v.mark, mark.newLine);
-            const nodes = await query.range(db, node.number, node.final_number);
+            const nodes = await query.range(node.number, node.final_number);
             /** @type {Map<number, number>} */
             const indents = new Map();
             indents.set(nodes[0].number, 0);
@@ -248,7 +230,7 @@ async function hoverHandler(value) {
       node.name && marks.push(new mark.Strong(node.name));
 
       if (node.class) {
-        const children = await query.children(db, node.number);
+        const children = await query.children(node.number);
         if (children.length) marks.push(mark.newLine, mark.thematicBreak);
         for (const node of children) {
           const v = await hoverHandler({ ...value, node });
@@ -274,12 +256,12 @@ async function hoverHandler(value) {
  * @returns {Promise<Value>}
  */
 async function definitionHandler(value) {
-  const { db, node } = value;
+  const { node } = value;
 
   if (node) {
     value.link = [];
     if (node.ref_ptr) {
-      const decl = await query.node(db, node.ref_ptr);
+      const decl = await query.node(node.ref_ptr);
       if (decl) value.link.push(decl);
     } else value.link.push(node);
   }
@@ -298,7 +280,7 @@ async function linkHandler(value) {
     const links = [];
     for (const node of value.link) {
       links.push({
-        uri: await query.uri(value.db, node.begin_src),
+        uri: await query.uri(node.begin_src),
         range: {
           start: {
             line: node.begin_row - 1,
@@ -343,7 +325,17 @@ const connection = createConnection(ProposedFeatures.all);
  **/
 const documents = new Map();
 
-connection.onInitialize(() => {
+let hasConfigurationCapability = false;
+
+connection.onInitialize((params) => {
+  const capabilities = params.capabilities;
+
+  // Does the client support the `workspace/configuration` request?
+  // If not, we fall back using global settings.
+  hasConfigurationCapability = !!(
+    capabilities.workspace && !!capabilities.workspace.configuration
+  );
+
   return {
     capabilities: {
       hoverProvider: true,
@@ -355,7 +347,14 @@ connection.onInitialize(() => {
   };
 });
 
-connection.onInitialized(() => {});
+connection.onInitialized(() => {
+  if (hasConfigurationCapability)
+    // Register for all configuration changes.
+    connection.client.register(
+      DidChangeConfigurationNotification.type,
+      undefined
+    );
+});
 
 connection.onDefinition(async (param) => {
   let value = /** @type {any} */ (param);
@@ -368,6 +367,10 @@ connection.onDefinition(async (param) => {
     value = await handler(value);
   }
   return value;
+});
+
+connection.onDidChangeConfiguration(async () => {
+  query.tu = await connection.workspace.getConfiguration("languageServerCC.tu");
 });
 
 connection.onHover(async (param) => {
