@@ -5,6 +5,7 @@ import {
   createConnection,
   ProposedFeatures,
   DidChangeConfigurationNotification,
+  SymbolKind,
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import Query from "./query.js";
@@ -17,8 +18,7 @@ const query = new Query();
  * @param {string} uri
  */
 async function getUriInfo(uri) {
-  const pathname = new URL(uri).pathname;
-  const doc = await getDocument(uri, pathname);
+  const { document: doc, pathname } = await getDocument(uri);
   const src = await query.src(pathname);
   return { doc, src };
 }
@@ -35,6 +35,14 @@ const specs = {
   hasLeadingSpace: 32,
 };
 
+const symbolKinds = Object.assign(
+  SymbolKind,
+  /** @type {const} */ ({
+    Union: 100,
+    TypeAlias: 101,
+  })
+);
+
 /**
  *
  * @param {number} specs
@@ -44,7 +52,6 @@ function markSpecs(specs) {
   /** @type {mark.Mark[]} */
   const marks = [];
   for (const spec in specMarks) {
-    // const spec = specMarks[mark];
     if (specs & parseInt(spec)) {
       marks.push(specMarks[spec], mark.space);
     }
@@ -55,10 +62,10 @@ function markSpecs(specs) {
 /**
  *
  * @param {string} uri
- * @param {string} pathname
  * @returns
  */
-async function getDocument(uri, pathname) {
+async function getDocument(uri) {
+  const pathname = new URL(uri).pathname;
   let document = documents.get(uri);
   if (!document) {
     const file = await open(pathname);
@@ -67,7 +74,7 @@ async function getDocument(uri, pathname) {
     document = TextDocument.create(uri, "", 0, content);
     documents.set(uri, document);
   }
-  return document;
+  return { document, pathname };
 }
 /**
  *
@@ -271,26 +278,66 @@ async function definitionHandler(value) {
 
 /**
  *
+ * @param {import("./query.js").Node} node
+ * @param {import("vscode-languageserver-textdocument").TextDocument} doc
+ * @returns
+ */
+function getRanges(node, doc) {
+  const endOffset =
+    doc.offsetAt({
+      line: node.end_row - 1,
+      character: node.end_col - 1,
+    }) + 1;
+
+  const endNameOffset =
+    node.row > 0
+      ? doc.offsetAt({
+          line: node.row - 1,
+          character: node.col - 1,
+        }) + (node.name ? node.name.length : 1)
+      : endOffset;
+
+  const range = {
+    start: {
+      line: node.begin_row - 1,
+      character: node.begin_col - 1,
+    },
+    end: doc.positionAt(Math.max(endOffset, endNameOffset)),
+  };
+
+  const selectionRange = {
+    start:
+      node.row > 0
+        ? {
+            line: node.row - 1,
+            character: node.col - 1,
+          }
+        : range.start,
+    end: doc.positionAt(endNameOffset),
+  };
+
+  return { range, selectionRange };
+}
+
+/**
+ *
  * @param {Value} value
- * @returns {Promise<import("vscode-languageserver/node.js").Location[] | null>}
+ * @returns {Promise<import("vscode-languageserver/node.js").LocationLink[] | null>}
  */
 async function linkHandler(value) {
   if (value.link) {
-    /** @type {import("vscode-languageserver/node.js").Location[]} */
+    /** @type {import("vscode-languageserver/node.js").LocationLink[]} */
     const links = [];
+
     for (const node of value.link) {
+      const uri = await query.uri(node.begin_src);
+      const { document: doc } = await getDocument(uri);
+
+      const result = getRanges(node, doc);
       links.push({
-        uri: await query.uri(node.begin_src),
-        range: {
-          start: {
-            line: node.begin_row - 1,
-            character: node.begin_col - 1,
-          },
-          end: {
-            line: node.end_row - 1,
-            character: node.end_col - 1,
-          },
-        },
+        targetUri: uri,
+        targetRange: result.range,
+        targetSelectionRange: result.selectionRange,
       });
     }
     return links;
@@ -343,17 +390,69 @@ connection.onInitialize((params) => {
       definitionProvider: true,
       typeDefinitionProvider: true,
       implementationProvider: true,
+      documentSymbolProvider: true,
     },
   };
 });
 
-connection.onInitialized(() => {
+connection.onInitialized(async () => {
   if (hasConfigurationCapability)
     // Register for all configuration changes.
     connection.client.register(
       DidChangeConfigurationNotification.type,
       undefined
     );
+
+  query.tu = await connection.workspace.getConfiguration("languageServerCC.tu");
+});
+
+connection.onDidChangeConfiguration(async () => {
+  query.tu = await connection.workspace.getConfiguration("languageServerCC.tu");
+});
+
+connection.onDocumentSymbol(async ({ textDocument }) => {
+  if (!query.tu) return null;
+
+  const { doc, src } = await getUriInfo(textDocument.uri);
+  const nodes = await query.symbols(src);
+  /** @type {import("vscode-languageserver/node.js").DocumentSymbol[]} */
+  const symbols = [];
+
+  for (const node of nodes) {
+    if (!node.name) continue;
+
+    let kind = 0;
+    switch (node.kind) {
+      case "FunctionDecl":
+        kind = symbolKinds.Function;
+        break;
+
+      case "RecordDecl":
+        if (node.class === 1) kind = symbolKinds.Struct;
+        else if (node.class === 2) kind = symbolKinds.Union;
+        else if (node.class === 3) kind = symbolKinds.Enum;
+        break;
+
+      case "VarDecl":
+        kind = symbolKinds.Variable;
+        break;
+
+      case "TypedefDecl":
+        kind = symbolKinds.TypeAlias;
+        break;
+    }
+
+    if (!kind || node.row == 0) continue;
+
+    const ranges = getRanges(node, doc);
+    symbols.push({
+      name: node.name,
+      kind: /** @type {any} */ (kind),
+      ...ranges,
+    });
+  }
+
+  return symbols;
 });
 
 connection.onDefinition(async (param) => {
@@ -367,10 +466,6 @@ connection.onDefinition(async (param) => {
     value = await handler(value);
   }
   return value;
-});
-
-connection.onDidChangeConfiguration(async () => {
-  query.tu = await connection.workspace.getConfiguration("languageServerCC.tu");
 });
 
 connection.onHover(async (param) => {

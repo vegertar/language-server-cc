@@ -51,7 +51,7 @@ export default class Query {
   #tu;
 
   /** @type {Map<string, import("sqlite3").Database>} */
-  #allDatabases;
+  #allDatabases = new Map();
 
   /** @type {import("sqlite3").Database} */
   db;
@@ -70,6 +70,10 @@ export default class Query {
       this.db = db;
       this.#tu = path;
     }
+  }
+
+  get tu() {
+    return this.#tu;
   }
 
   /**
@@ -245,6 +249,26 @@ export default class Query {
       this.db.all(
         "SELECT * FROM ast WHERE number >= $first AND number <= $last",
         { $first: first, $last: last },
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * @param {number} src
+   * @returns {Promise<Node[]>}
+   */
+  symbols(src) {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        "SELECT * FROM ast WHERE parent_number = 0 AND begin_src = $src",
+        { $src: src },
         (err, rows) => {
           if (err) {
             reject(err);
