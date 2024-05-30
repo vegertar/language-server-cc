@@ -22,7 +22,7 @@
         "languageServerCC.tu": {
           "scope": "window",
           "type": "string",
-          "default": "Undefined",
+          "default": "",
           "description": "The Translation Unit"
         }
       }

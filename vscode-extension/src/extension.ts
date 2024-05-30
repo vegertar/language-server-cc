@@ -1,8 +1,3 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
-
 import * as path from "path";
 import {
   commands,
@@ -11,6 +6,7 @@ import {
   ExtensionContext,
   StatusBarAlignment,
   StatusBarItem,
+  ThemeColor,
 } from "vscode";
 import * as nls from "vscode-nls";
 import {
@@ -18,6 +14,7 @@ import {
   LanguageClientOptions,
   ServerOptions,
   TransportKind,
+  DidChangeConfigurationNotification,
 } from "vscode-languageclient/node";
 import { getAllTUPaths } from "./utils";
 
@@ -75,39 +72,56 @@ function createClient(context: ExtensionContext) {
   context.subscriptions.push(client);
 }
 
-function selectTU(context: ExtensionContext) {
-  const id = "languageServerCC.selectTU";
-  context.subscriptions.push(
-    commands.registerCommand(id, async () => {
-      const workspaceFolder = workspace.workspaceFolders?.[0];
-      const folderPath = workspaceFolder.uri.fsPath;
-      const items = workspaceFolder ? await getAllTUPaths(folderPath) : [];
-      const tu = await window.showQuickPick(
-        items.map((file) => path.relative(folderPath, file)),
-        {
-          placeHolder: localize("select.tu", "Select Translation Unit"),
-        }
-      );
-      if (tu)
-        await workspace.getConfiguration().update("languageServerCC.tu", tu);
-    })
-  );
-  return id;
+function selectTU(id: string) {
+  return commands.registerCommand(id, async () => {
+    const workspaceFolder = workspace.workspaceFolders?.[0];
+    const folderPath = workspaceFolder.uri.fsPath;
+    const items = workspaceFolder ? await getAllTUPaths(folderPath) : [];
+    const tu = await window.showQuickPick(
+      items.map((file) => path.relative(folderPath, file)),
+      {
+        placeHolder: localize("select.tu", "Select Translation Unit"),
+      }
+    );
+
+    if (tu) {
+      await workspace.getConfiguration().update(id, tu);
+    }
+  });
 }
 
-function updateStatus(item: StatusBarItem) {
-  item.text = "TU: " + workspace.getConfiguration().get("languageServerCC.tu");
-  item.show();
+function updateStatus(
+  id: string,
+  status: StatusBarItem,
+  client: LanguageClient
+) {
+  const tu = workspace.getConfiguration().get(id);
+
+  status.text = `${tu}`;
+  status.tooltip = `Translation Unit: ${tu}`;
+  status.backgroundColor = tu
+    ? undefined
+    : new ThemeColor("statusBarItem.errorBackground");
+
+  status.show();
+  client.sendNotification(DidChangeConfigurationNotification.type, {
+    settings: [id, tu],
+  });
 }
 
-async function createStatus(context: ExtensionContext) {
-  const item = window.createStatusBarItem(StatusBarAlignment.Left);
-  item.command = selectTU(context);
+function createStatus(context: ExtensionContext) {
+  const client = context.subscriptions[0] as LanguageClient;
+  const id = "languageServerCC.tu";
+  const command = selectTU(id);
+  const status = window.createStatusBarItem(StatusBarAlignment.Left);
+  status.command = id;
+
   context.subscriptions.push(
-    item,
-    workspace.onDidChangeConfiguration(() => updateStatus(item))
+    status,
+    command,
+    workspace.onDidChangeConfiguration(() => updateStatus(id, status, client))
   );
-  updateStatus(item);
+  updateStatus(id, status, client);
 }
 
 export async function activate(context: ExtensionContext) {

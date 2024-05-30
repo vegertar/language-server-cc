@@ -372,17 +372,7 @@ const connection = createConnection(ProposedFeatures.all);
  **/
 const documents = new Map();
 
-let hasConfigurationCapability = false;
-
-connection.onInitialize((params) => {
-  const capabilities = params.capabilities;
-
-  // Does the client support the `workspace/configuration` request?
-  // If not, we fall back using global settings.
-  hasConfigurationCapability = !!(
-    capabilities.workspace && !!capabilities.workspace.configuration
-  );
-
+connection.onInitialize(() => {
   return {
     capabilities: {
       hoverProvider: true,
@@ -395,19 +385,17 @@ connection.onInitialize((params) => {
   };
 });
 
-connection.onInitialized(async () => {
-  if (hasConfigurationCapability)
-    // Register for all configuration changes.
-    connection.client.register(
-      DidChangeConfigurationNotification.type,
-      undefined
-    );
+connection.onInitialized(async () => {});
 
-  query.tu = await connection.workspace.getConfiguration("languageServerCC.tu");
-});
-
-connection.onDidChangeConfiguration(async () => {
-  query.tu = await connection.workspace.getConfiguration("languageServerCC.tu");
+connection.onDidChangeConfiguration(async ({ settings }) => {
+  if (Array.isArray(settings)) {
+    for (let i = 0, n = settings.length; i < n; i += 2)
+      switch (settings[i]) {
+        case "languageServerCC.tu":
+          query.tu = settings[i + 1];
+          break;
+      }
+  }
 });
 
 connection.onDocumentSymbol(async ({ textDocument }) => {
@@ -456,6 +444,8 @@ connection.onDocumentSymbol(async ({ textDocument }) => {
 });
 
 connection.onDefinition(async (param) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -469,6 +459,8 @@ connection.onDefinition(async (param) => {
 });
 
 connection.onHover(async (param) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
