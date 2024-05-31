@@ -1,6 +1,8 @@
 // @ts-check
 
 import { open } from "node:fs/promises";
+import * as fs from "fs";
+import * as path from "path";
 import {
   createConnection,
   ProposedFeatures,
@@ -372,7 +374,93 @@ const connection = createConnection(ProposedFeatures.all);
  **/
 const documents = new Map();
 
-connection.onInitialize(() => {
+/**
+ *
+ * @param {string} dirPath
+ * @returns {Promise<string[]>}
+ */
+export function readDir(dirPath) {
+  return new Promise((resolve) => {
+    fs.readdir(dirPath, (error, list) => {
+      if (error) {
+        resolve([]);
+      } else {
+        resolve(list);
+      }
+    });
+  });
+}
+
+/**
+ *
+ * @param {string} filePath
+ * @returns {Promise<fs.Stats | undefined>}
+ */
+function getLStat(filePath) {
+  return new Promise((resolve) => {
+    fs.lstat(filePath, (_err, stats) => {
+      if (stats) {
+        resolve(stats);
+      } else {
+        resolve(undefined);
+      }
+    });
+  });
+}
+
+/**
+ *
+ * @param {string} dir
+ * @param {RegExp} regex
+ * @param {string[]} files
+ * @param {string[]} result
+ * @returns
+ */
+async function recGetAllFilePaths(dir, regex, files, result) {
+  for (const item of files) {
+    const file = path.join(dir, item);
+    try {
+      const status = await getLStat(file);
+      if (status) {
+        if (status.isDirectory() && !status.isSymbolicLink()) {
+          result = await recGetAllFilePaths(
+            file,
+            regex,
+            await readDir(file),
+            result
+          );
+        } else if (status.isFile() && regex.test(file)) {
+          result.push(file);
+        }
+      }
+    } catch (error) {
+      continue;
+    }
+  }
+  return result;
+}
+
+/**
+ *
+ * @param {string} path
+ * @returns {Promise<string[] | undefined>}
+ */
+async function getAllTUPaths(path) {
+  const regex = new RegExp(/\.o$/);
+  return recGetAllFilePaths(path, regex, await readDir(path), []);
+}
+
+/** @type {string[] | undefined} */
+let translationUnits;
+
+connection.onInitialize(async ({ workspaceFolders, initializationOptions }) => {
+  const uri = workspaceFolders?.[0].uri;
+  if (uri) translationUnits = await getAllTUPaths(new URL(uri).pathname);
+
+  /** @type {string | undefined} */
+  const translationUnit = initializationOptions?.translationUnit;
+  if (translationUnit) query.tu = translationUnit;
+
   return {
     capabilities: {
       hoverProvider: true,
@@ -381,6 +469,7 @@ connection.onInitialize(() => {
       typeDefinitionProvider: true,
       implementationProvider: true,
       documentSymbolProvider: true,
+      experimental: { translationUnits },
     },
   };
 });
@@ -399,8 +488,6 @@ connection.onDidChangeConfiguration(async ({ settings }) => {
 });
 
 connection.onDocumentSymbol(async ({ textDocument }) => {
-  if (!query.tu) return null;
-
   const { doc, src } = await getUriInfo(textDocument.uri);
   const nodes = await query.symbols(src);
   /** @type {import("vscode-languageserver/node.js").DocumentSymbol[]} */
@@ -444,8 +531,6 @@ connection.onDocumentSymbol(async ({ textDocument }) => {
 });
 
 connection.onDefinition(async (param) => {
-  if (!query.tu) return null;
-
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -459,8 +544,6 @@ connection.onDefinition(async (param) => {
 });
 
 connection.onHover(async (param) => {
-  if (!query.tu) return null;
-
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,

@@ -5,8 +5,8 @@ import {
   workspace,
   ExtensionContext,
   StatusBarAlignment,
-  StatusBarItem,
   ThemeColor,
+  ConfigurationChangeEvent,
 } from "vscode";
 import * as nls from "vscode-nls";
 import {
@@ -16,7 +16,6 @@ import {
   TransportKind,
   DidChangeConfigurationNotification,
 } from "vscode-languageclient/node";
-import { getAllTUPaths } from "./utils";
 
 nls.config({
   messageFormat: nls.MessageFormat.bundle,
@@ -24,7 +23,7 @@ nls.config({
 })();
 const localize: nls.LocalizeFunc = nls.loadMessageBundle();
 
-function createClient(context: ExtensionContext) {
+async function startClient(context: ExtensionContext) {
   // The server is implemented in node
   const serverModule = context.asAbsolutePath(path.join("src", "index.js"));
 
@@ -56,6 +55,10 @@ function createClient(context: ExtensionContext) {
       // Notify the server about file changes to '.clientrc files contained in the workspace
       fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
     },
+    // Set the initial translation unit
+    initializationOptions: {
+      translationUnit: workspace.getConfiguration().get("languageServerCC.tu"),
+    },
   };
 
   // Create the language client and start the client.
@@ -67,64 +70,63 @@ function createClient(context: ExtensionContext) {
   );
 
   // Start the client. This will also launch the server
-  client.start();
+  await client.start();
 
   context.subscriptions.push(client);
-}
 
-function selectTU(id: string) {
-  return commands.registerCommand(id, async () => {
-    const workspaceFolder = workspace.workspaceFolders?.[0];
-    const folderPath = workspaceFolder.uri.fsPath;
-    const items = workspaceFolder ? await getAllTUPaths(folderPath) : [];
-    const tu = await window.showQuickPick(
-      items.map((file) => path.relative(folderPath, file)),
-      {
-        placeHolder: localize("select.tu", "Select Translation Unit"),
+  const { experimental } = client.initializeResult.capabilities;
+  const workspaceFolder = workspace.workspaceFolders?.[0];
+  if (experimental?.translationUnits && workspaceFolder) {
+    const translationUnits = experimental.translationUnits as string[];
+    const dir = workspaceFolder.uri.fsPath;
+    const list = translationUnits.map((tu) => path.relative(dir, tu));
+    const command = commands.registerCommand(
+      "languageServerCC.selectTU",
+      async () => {
+        const tu = await window.showQuickPick(list, {
+          placeHolder: localize("select.tu", "Select Translation Unit"),
+        });
+
+        if (tu) {
+          await workspace.getConfiguration().update("languageServerCC.tu", tu);
+        }
       }
     );
 
-    if (tu) {
-      await workspace.getConfiguration().update(id, tu);
-    }
-  });
-}
-
-function updateStatus(
-  id: string,
-  status: StatusBarItem,
-  client: LanguageClient
-) {
-  const tu = workspace.getConfiguration().get(id);
-
-  status.text = `${tu}`;
-  status.tooltip = `Translation Unit: ${tu}`;
-  status.backgroundColor = tu
-    ? undefined
-    : new ThemeColor("statusBarItem.errorBackground");
-
-  status.show();
-  client.sendNotification(DidChangeConfigurationNotification.type, {
-    settings: [id, tu],
-  });
+    context.subscriptions.push(command);
+  }
 }
 
 function createStatus(context: ExtensionContext) {
   const client = context.subscriptions[0] as LanguageClient;
-  const id = "languageServerCC.tu";
-  const command = selectTU(id);
   const status = window.createStatusBarItem(StatusBarAlignment.Left);
-  status.command = id;
+  status.command = "languageServerCC.selectTU";
 
+  const update = (event?: ConfigurationChangeEvent) => {
+    const section = "languageServerCC.tu";
+    const tu = workspace.getConfiguration().get(section);
+    status.text = `${tu}`;
+    status.tooltip = `Translation Unit: ${tu}`;
+    status.backgroundColor = tu
+      ? undefined
+      : new ThemeColor("statusBarItem.errorBackground");
+
+    status.show();
+    if (event) {
+      client.sendNotification(DidChangeConfigurationNotification.type, {
+        settings: [section, tu],
+      });
+    }
+  };
+
+  update();
   context.subscriptions.push(
     status,
-    command,
-    workspace.onDidChangeConfiguration(() => updateStatus(id, status, client))
+    workspace.onDidChangeConfiguration(update)
   );
-  updateStatus(id, status, client);
 }
 
 export async function activate(context: ExtensionContext) {
-  createClient(context);
+  await startClient(context);
   createStatus(context);
 }
