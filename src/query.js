@@ -33,6 +33,8 @@ import sqlite3 from "sqlite3";
  *   desugared_type: string,
  *   specs: number,
  *   class: number,
+ *   ptr: string,
+ *   prev: string | null | undefined,
  *   ref_ptr: string | null | undefined,
  *   begin_src: number,
  *   begin_row: number,
@@ -211,6 +213,47 @@ export default class Query {
             reject(err);
           } else {
             resolve(row);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   *
+   * @param {string} ptr
+   * @returns {Promise<Node | undefined>}
+   */
+  next(ptr) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        "SELECT * FROM ast WHERE prev = $ptr",
+        { $ptr: ptr },
+        (err, row) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(row);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * @param {string[]} ptrs
+   * @returns {Promise<Node[]>}
+   */
+  refs(ptrs) {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        `SELECT * FROM ast WHERE kind = 'DeclRefExpr' AND ref_ptr IN (${Array(ptrs.length).fill("?")})`,
+        ptrs,
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
           }
         }
       );

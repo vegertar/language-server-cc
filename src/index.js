@@ -6,7 +6,6 @@ import * as path from "path";
 import {
   createConnection,
   ProposedFeatures,
-  DidChangeConfigurationNotification,
   SymbolKind,
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
@@ -264,18 +263,86 @@ async function hoverHandler(value) {
  * @param {Value} value
  * @returns {Promise<Value>}
  */
+async function declarationHandler(value) {
+  if (value.link) {
+    const definition = value.link[0];
+    /** @type {import("./query.js").Node | undefined} */
+    let decl = definition;
+    while (decl?.prev) {
+      decl = await query.node(decl.prev);
+      if (decl) value.link.push(decl);
+    }
+  }
+
+  return value;
+}
+
+/**
+ *
+ * @param {Value} value
+ * @returns {Promise<Value>}
+ */
 async function definitionHandler(value) {
   const { node } = value;
 
   if (node) {
     value.link = [];
-    if (node.ref_ptr) {
-      const decl = await query.node(node.ref_ptr);
-      if (decl) value.link.push(decl);
-    } else value.link.push(node);
+    let decl = node.ref_ptr ? await query.node(node.ref_ptr) : node;
+    switch (decl?.kind) {
+      case "FunctionDecl":
+        /**
+         * Try to find the definition as much as possible.
+         *
+         * C/C++ allows multiple declarations and only one definition, e.g.
+         *   void foo();   // decl 1
+         *   void foo();   // decl 2
+         *   ...
+         *   void foo();   // decl N
+         *   void foo() {} // definition
+         *
+         * Ordinarily, when we refer to the definition of a function, we mean the
+         * specific function definition with a body, so we should always reach
+         * the line "void foo() {}".
+         *
+         * However, in some cases, the definition is optional, e.g., sizeof(&foo);.
+         * In this case, we should point to the last declaration rather than
+         * leaving a null result or retaining the initial declaration we started with.
+         * This allows us to chain all declarations in the next handler.
+         */
+
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const next = await query.next(decl.ptr);
+          if (!next) break;
+          decl = next;
+        }
+        break;
+    }
+
+    if (decl) value.link.push(decl);
   }
 
   return value;
+}
+
+/**
+ * @param {import("vscode-languageserver/node.js").ReferenceContext} context
+ */
+function referencesHandler(context) {
+  /**
+   *
+   * @param {Value} value
+   * @returns {Promise<Value>}
+   */
+  return async (value) => {
+    if (value.link) {
+      const refs = await query.refs(value.link.map((node) => node.ptr));
+      if (context.includeDeclaration) value.link.push(...refs);
+      else value.link = refs;
+    }
+
+    return value;
+  };
 }
 
 /**
@@ -285,37 +352,39 @@ async function definitionHandler(value) {
  * @returns
  */
 function getRanges(node, doc) {
-  const endOffset =
-    doc.offsetAt({
-      line: node.end_row - 1,
-      character: node.end_col - 1,
-    }) + 1;
-
-  const endNameOffset =
+  const namePosition =
     node.row > 0
-      ? doc.offsetAt({
+      ? {
           line: node.row - 1,
           character: node.col - 1,
-        }) + (node.name ? node.name.length : 1)
-      : endOffset;
+        }
+      : {
+          line: node.begin_row - 1,
+          character: node.begin_col - 1,
+        };
+
+  const nameEndOffset =
+    doc.offsetAt(namePosition) + (node.name ? node.name.length : 1);
 
   const range = {
     start: {
       line: node.begin_row - 1,
       character: node.begin_col - 1,
     },
-    end: doc.positionAt(Math.max(endOffset, endNameOffset)),
+    end: doc.positionAt(
+      Math.max(
+        doc.offsetAt({
+          line: node.end_row - 1,
+          character: node.end_col - 1,
+        }) + 1,
+        nameEndOffset
+      )
+    ),
   };
 
   const selectionRange = {
-    start:
-      node.row > 0
-        ? {
-            line: node.row - 1,
-            character: node.col - 1,
-          }
-        : range.start,
-    end: doc.positionAt(endNameOffset),
+    start: namePosition,
+    end: doc.positionAt(nameEndOffset),
   };
 
   return { range, selectionRange };
@@ -345,6 +414,20 @@ async function linkHandler(value) {
     return links;
   }
   return null;
+}
+
+/**
+ *
+ * @param {import("vscode-languageserver/node.js").LocationLink[] | null} links
+ * @returns {import("vscode-languageserver/node.js").Location[] | null}
+ */
+function locationHandler(links) {
+  return links
+    ? links.map((link) => ({
+        uri: link.targetUri,
+        range: link.targetSelectionRange,
+      }))
+    : null;
 }
 
 /**
@@ -468,6 +551,7 @@ connection.onInitialize(async ({ workspaceFolders, initializationOptions }) => {
       definitionProvider: true,
       typeDefinitionProvider: true,
       implementationProvider: true,
+      referencesProvider: true,
       documentSymbolProvider: true,
       experimental: { translationUnits },
     },
@@ -537,6 +621,36 @@ connection.onDefinition(async (param) => {
     tokenHandler,
     definitionHandler,
     linkHandler,
+  ]) {
+    value = await handler(value);
+  }
+  return value;
+});
+
+connection.onDeclaration(async (param) => {
+  let value = /** @type {any} */ (param);
+  for (const handler of [
+    positionHandler,
+    tokenHandler,
+    definitionHandler,
+    declarationHandler,
+    linkHandler,
+  ]) {
+    value = await handler(value);
+  }
+  return value;
+});
+
+connection.onReferences(async ({ context, ...param }) => {
+  let value = /** @type {any} */ (param);
+  for (const handler of [
+    positionHandler,
+    tokenHandler,
+    definitionHandler,
+    declarationHandler,
+    referencesHandler(context),
+    linkHandler,
+    locationHandler,
   ]) {
     value = await handler(value);
   }
