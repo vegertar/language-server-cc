@@ -553,6 +553,7 @@ connection.onInitialize(async ({ workspaceFolders, initializationOptions }) => {
       implementationProvider: true,
       referencesProvider: true,
       documentSymbolProvider: true,
+      documentLinkProvider: { resolveProvider: true },
       experimental: { translationUnits },
     },
   };
@@ -569,6 +570,33 @@ connection.onDidChangeConfiguration(async ({ settings }) => {
           break;
       }
   }
+});
+
+connection.onDocumentLinks(async ({ textDocument }) => {
+  const { src } = await getUriInfo(textDocument.uri);
+  const nodes = await query.links(src);
+  /** @type {import("vscode-languageserver/node.js").DocumentLink[]} */
+  const links = [];
+
+  for (const node of nodes) {
+    if (!node.desugared_type) continue;
+    links.push({
+      range: {
+        start: {
+          line: node.row - 1,
+          character: node.col - 1,
+        },
+        end: {
+          line: node.row,
+          character: 0,
+        },
+      },
+      target: "file://" + node.desugared_type,
+      tooltip: `_#${node.name}_ **"${node.desugared_type}"**`,
+    });
+  }
+
+  return links;
 });
 
 connection.onDocumentSymbol(async ({ textDocument }) => {

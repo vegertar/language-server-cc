@@ -322,4 +322,24 @@ export default class Query {
       );
     });
   }
+
+  /**
+   * @param {number} src
+   * @returns {Promise<Node[]>}
+   */
+  links(src) {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        "SELECT * FROM ast WHERE kind = 'InclusionDirective' AND src = $src",
+        { $src: src },
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
+    });
+  }
 }
