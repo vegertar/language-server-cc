@@ -9,7 +9,7 @@ import {
   SymbolKind,
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
-import Query from "./query.js";
+import Query, { SEMANTIC_EXPANSION, SEMANTIC_INACTIVE } from "./query.js";
 import * as mark from "./mark.js";
 
 const query = new Query();
@@ -43,6 +43,27 @@ const symbolKinds = Object.assign(
     TypeAlias: 101,
   })
 );
+
+/**
+ * Semantic Tokens
+ */
+const tokenTypes = ["macro", "comment"];
+const tokenModifiers = [];
+
+const tokenTypesMap = Object.fromEntries(tokenTypes.map((v, i) => [v, i]));
+
+/**
+ *
+ * @param {import("./query.js").Semantics} semantics
+ */
+function tokenSemantics(semantics) {
+  switch (semantics) {
+    case SEMANTIC_EXPANSION:
+      return [tokenTypesMap["macro"], 0];
+    case SEMANTIC_INACTIVE:
+      return [tokenTypesMap["comment"], 0];
+  }
+}
 
 /**
  *
@@ -523,22 +544,20 @@ async function recGetAllFilePaths(dir, regex, files, result) {
   return result;
 }
 
-/**
- *
- * @param {string} path
- * @returns {Promise<string[] | undefined>}
- */
-async function getAllTUPaths(path) {
-  const regex = new RegExp(/\.o$/);
-  return recGetAllFilePaths(path, regex, await readDir(path), []);
-}
-
-/** @type {string[] | undefined} */
-let translationUnits;
-
 connection.onInitialize(async ({ workspaceFolders, initializationOptions }) => {
+  /** @type {string[] | undefined} */
+  let translationUnits;
+
   const uri = workspaceFolders?.[0].uri;
-  if (uri) translationUnits = await getAllTUPaths(new URL(uri).pathname);
+  if (uri) {
+    const path = new URL(uri).pathname;
+    translationUnits = await recGetAllFilePaths(
+      path,
+      /\.o$/,
+      await readDir(path),
+      []
+    );
+  }
 
   /** @type {string | undefined} */
   const translationUnit = initializationOptions?.translationUnit;
@@ -554,6 +573,11 @@ connection.onInitialize(async ({ workspaceFolders, initializationOptions }) => {
       referencesProvider: true,
       documentSymbolProvider: true,
       documentLinkProvider: { resolveProvider: true },
+      semanticTokensProvider: {
+        legend: { tokenTypes, tokenModifiers },
+        range: true,
+        full: { delta: true },
+      },
       experimental: { translationUnits },
     },
   };
@@ -697,6 +721,105 @@ connection.onHover(async (param) => {
   }
   return value;
 });
+
+/**
+ * @param {import("vscode-languageserver/node.js").SemanticTokensParams & {range?: import("vscode-languageserver/node.js").Range}} param0
+ * @returns {Promise<import("vscode-languageserver/node.js").SemanticTokens | null>}
+ */
+async function onTextDocumentSemanticTokens({ textDocument, range }) {
+  const { doc, src } = await getUriInfo(textDocument.uri);
+  const semanticRanges = await query.semantics(src, range);
+
+  /**
+   * @typedef {{
+   *   line: number,
+   *   character: number,
+   *   length: number,
+   *   tokenType: number,
+   *   tokenModifier: number,
+   * }} SemanticTokenItem
+   */
+
+  /** @typedef {SemanticTokenItem[]} */
+  const items = [];
+
+  for (const value of semanticRanges) {
+    console.debug("======================================");
+    console.debug(value);
+    let { begin_row, begin_col, end_row, end_col, semantics } = value;
+    const [tokenType, tokenModifier] = tokenSemantics(semantics);
+    let offset = 0;
+
+    do {
+      /** @type {SemanticTokenItem} */
+      const item = {
+        tokenType,
+        tokenModifier,
+        line: begin_row - 1,
+        character: begin_col - 1,
+        length: 0,
+      };
+
+      items.push(item);
+
+      if (begin_row == end_row) {
+        item.length = end_col - begin_col;
+      } else {
+        // There are multiple lines
+        const nextLine = { line: begin_row, character: 0 };
+        const nextOffset = doc.offsetAt(nextLine);
+        item.length = nextOffset - (offset || doc.offsetAt(item));
+        offset = nextOffset;
+      }
+
+      begin_row += 1;
+      begin_col = 1;
+    } while (begin_row <= end_row);
+  }
+
+  return {
+    data: items
+      .sort((a, b) => a.line - b.line)
+      .flatMap((item, i, items) => {
+        if (i == 0)
+          return [
+            item.line,
+            item.character,
+            item.length,
+            item.tokenType,
+            item.tokenModifier,
+          ];
+
+        if (item.line == items[i - 1].line) {
+          return [
+            0,
+            item.character - items[i - 1].character,
+            item.length,
+            item.tokenType,
+            item.tokenModifier,
+          ];
+        }
+
+        return [
+          item.line - items[i - 1].line,
+          item.character,
+          item.length,
+          item.tokenType,
+          item.tokenModifier,
+        ];
+      }),
+  };
+}
+
+connection.onRequest(
+  "textDocument/semanticTokens/full",
+  onTextDocumentSemanticTokens
+);
+
+connection.onRequest(
+  "textDocument/semanticTokens/range",
+  onTextDocumentSemanticTokens
+);
 
 // Listen on the connection
 connection.listen();

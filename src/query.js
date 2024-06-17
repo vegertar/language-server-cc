@@ -48,6 +48,13 @@ import sqlite3 from "sqlite3";
  * }} Node
  */
 
+export const SEMANTIC_EXPANSION = 0;
+export const SEMANTIC_INACTIVE = 1;
+
+/**
+ * @typedef {typeof SEMANTIC_EXPANSION | typeof SEMANTIC_INACTIVE} Semantics
+ */
+
 export default class Query {
   /** @type {string} */
   #tu;
@@ -126,19 +133,25 @@ export default class Query {
   }
 
   /**
-   * Get the correct token location if the given position is within a macro expansion.
+   * Get the correct token location by the given position.
    * @param {number} src
    * @param {import("vscode-languageserver/node").Position} pos
+   * @param {Semantics} [semantics]
    * @returns {Promise<import("vscode-languageserver/node").Position | null>}
    */
-  async loc(src, pos) {
+  async loc(src, pos, semantics = SEMANTIC_EXPANSION) {
     /**
      * @type {Range | undefined}
      */
     const range = await new Promise((resolve, reject) => {
       this.db.get(
-        "SELECT * FROM loc WHERE begin_src = $src AND end_src = $src AND ((begin_row = $row AND begin_col <= $col) OR (begin_row < $row)) AND ((end_row = $row AND end_col > $col) OR (end_row > $row))",
-        { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
+        "SELECT * FROM loc WHERE begin_src = $src AND end_src = $src AND ((begin_row = $row AND begin_col <= $col) OR (begin_row < $row)) AND ((end_row = $row AND end_col > $col) OR (end_row > $row)) AND semantics = $semantics",
+        {
+          $src: src,
+          $row: pos.line + 1,
+          $col: pos.character + 1,
+          $semantics: semantics,
+        },
         (err, row) => {
           if (err) {
             reject(err);
@@ -340,6 +353,37 @@ export default class Query {
           }
         }
       );
+    });
+  }
+
+  /**
+   * @param {number} src
+   * @param {import("vscode-languageserver/node.js").Range} [range]
+   * @returns {Promise<(Range & {semantics: Semantics})[]>}
+   */
+  semantics(src, range) {
+    /** @type {[string, any]} */
+    const args = range
+      ? [
+          "SELECT * FROM loc WHERE begin_src = $src AND (($begin_row = begin_row AND $begin_col <= begin_col) OR ($begin_row < begin_row)) AND ((end_row = $end_row AND end_col <= $end_col) OR (end_row < $end_row))",
+          {
+            $src: src,
+            $begin_row: range.start.line + 1,
+            $begin_col: range.start.character + 1,
+            $end_row: range.end.line + 1,
+            $end_col: range.end.character + 1,
+          },
+        ]
+      : ["SELECT * FROM loc WHERE begin_src = $src", { $src: src }];
+
+    return new Promise((resolve, reject) => {
+      this.db.all(...args, (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(rows);
+        }
+      });
     });
   }
 }
