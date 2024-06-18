@@ -234,6 +234,35 @@ export default class Query {
 
   /**
    *
+   * @param {number} src
+   * @param {import("vscode-languageserver/node").Position} pos
+   * @returns {Promise<Node | undefined>}
+   */
+  async decl(src, pos) {
+    /** @type {Node | undefined} */
+    let node = await new Promise((resolve, reject) => {
+      this.db.get(
+        "SELECT * FROM ast WHERE begin_src = $src AND begin_row = $row AND begin_col = $col",
+        { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
+        (err, row) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(row);
+          }
+        }
+      );
+    });
+
+    if (node?.ref_ptr) {
+      node = await this.node(node.ref_ptr);
+    }
+
+    if (node?.kind.endsWith("Decl")) return node;
+  }
+
+  /**
+   *
    * @param {string} ptr
    * @returns {Promise<Node | undefined>}
    */

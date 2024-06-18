@@ -167,6 +167,10 @@ async function positionHandler({ textDocument: { uri }, position }) {
 async function tokenHandler(value) {
   if (value.token) {
     value.node = await query.node(value.token.decl);
+  } else {
+    // Sometimes Clang does not generate tokens, e.g., in macro expansions within conditional preprocessors.
+    // In such cases, we query the AST node by position.
+    value.node = await query.decl(value.src, value.pos);
   }
   return value;
 }
@@ -744,8 +748,6 @@ async function onTextDocumentSemanticTokens({ textDocument, range }) {
   const items = [];
 
   for (const value of semanticRanges) {
-    console.debug("======================================");
-    console.debug(value);
     let { begin_row, begin_col, end_row, end_col, semantics } = value;
     const [tokenType, tokenModifier] = tokenSemantics(semantics);
     let offset = 0;
