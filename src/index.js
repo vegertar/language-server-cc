@@ -68,11 +68,10 @@ function tokenSemantics(semantics) {
 /**
  *
  * @param {number} specs
+ * @param {mark.Mark[]} [marks]
  * @returns
  */
-function markSpecs(specs) {
-  /** @type {mark.Mark[]} */
-  const marks = [];
+function markSpecs(specs, marks = []) {
   for (const spec in specMarks) {
     if (specs & parseInt(spec)) {
       marks.push(specMarks[spec], mark.space);
@@ -98,6 +97,7 @@ async function getDocument(uri) {
   }
   return { document, pathname };
 }
+
 /**
  *
  * @param {number} ch
@@ -217,7 +217,7 @@ async function hoverHandler(value) {
             node: await query.node(node.ref_ptr),
           });
           if (v.mark) {
-            marks.push(v.mark, mark.newLine);
+            marks.push(v.mark, mark.newLine, mark.thematicBreak, mark.newLine);
             const nodes = await query.range(node.number, node.final_number);
             /** @type {Map<number, number>} */
             const indents = new Map();
@@ -275,6 +275,18 @@ async function hoverHandler(value) {
           marks.push(mark.colon, mark.space, new mark.Emphasis(qualified_type));
         if (desugared_type && desugared_type !== qualified_type)
           marks.push(mark.space, new mark.Code(desugared_type));
+      }
+
+      if (node.begin_src != -1) {
+        const filename = await query.filename(node.begin_src);
+        if (filename)
+          marks.push(
+            mark.newLine,
+            mark.thematicBreak,
+            mark.newLine,
+            new mark.CodeInline(filename),
+            new mark.Emphasis("provided")
+          );
       }
     }
 
@@ -426,7 +438,11 @@ async function linkHandler(value) {
     const links = [];
 
     for (const node of value.link) {
-      const uri = await query.uri(node.begin_src);
+      const filename = await query.filename(node.begin_src);
+      // Skip the builtin files
+      if (!filename || filename.startsWith("<")) continue;
+
+      const uri = "file://" + filename;
       const { document: doc } = await getDocument(uri);
 
       const result = getRanges(node, doc);

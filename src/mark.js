@@ -60,6 +60,12 @@ export class Indent extends Mark {
   }
 }
 
+export class CodeInline extends Inline {
+  toText() {
+    return `\`${this.content}\``;
+  }
+}
+
 export class CodeBlock extends Mark {
   /**
    *

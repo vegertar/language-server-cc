@@ -87,6 +87,29 @@ export default class Query {
 
   /**
    *
+   * @param {number} src
+   * @returns {Promise<string | undefined>}
+   */
+  async filename(src) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        "SELECT filename FROM src WHERE number = $src",
+        { $src: src },
+        (err, row) => {
+          if (err) {
+            reject(err);
+          } else if (!row) {
+            reject(new Error(`src: not found number: ${src}`));
+          } else {
+            resolve(row.filename);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   *
    * @param {string} file
    * @returns {Promise<number>}
    */
@@ -106,30 +129,6 @@ export default class Query {
         }
       );
     });
-  }
-
-  /**
-   *
-   * @param {number} src
-   * @returns {Promise<string>}
-   */
-  async uri(src) {
-    const filename = await new Promise((resolve, reject) => {
-      this.db.get(
-        "SELECT filename FROM src WHERE number = $src",
-        { $src: src },
-        (err, row) => {
-          if (err) {
-            reject(err);
-          } else if (!row) {
-            reject(new Error(`src: not found src: ${src}`));
-          } else {
-            resolve(row.filename);
-          }
-        }
-      );
-    });
-    return "file://" + filename;
   }
 
   /**
@@ -241,6 +240,16 @@ export default class Query {
   async decl(src, pos) {
     /** @type {Node | undefined} */
     let node = await new Promise((resolve, reject) => {
+      /**
+       * TODO: There might be multiple ExpansionDecl at the given position, e.g.
+       *  #define A(a) a+B
+       *
+       *  #define B 1
+       *  int one = A(0);
+       *  #undef B
+       *  #define B 2
+       *  int two = A(1);
+       */
       this.db.get(
         "SELECT * FROM ast WHERE begin_src = $src AND begin_row = $row AND begin_col = $col",
         { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
