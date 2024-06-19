@@ -28,7 +28,6 @@ import sqlite3 from "sqlite3";
  *   final_number: number,
  *   kind: string,
  *   name: string | null | undefined,
- *   sqname: string | null | undefined,
  *   qualified_type: string,
  *   desugared_type: string,
  *   specs: number,
@@ -361,7 +360,7 @@ export default class Query {
   symbols(src) {
     return new Promise((resolve, reject) => {
       this.db.all(
-        "SELECT * FROM ast WHERE parent_number = 0 AND begin_src = $src",
+        "SELECT * FROM ast WHERE parent_number = 0 AND begin_src = $src AND end_src = $src",
         { $src: src },
         (err, rows) => {
           if (err) {

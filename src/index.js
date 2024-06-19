@@ -184,6 +184,8 @@ async function hoverHandler(value) {
   const { node } = value;
 
   if (node) {
+    // TODO: add implicit label to implicitly declared functions
+    // TODO: add hover info for those macros, e.g. __has_attribute,  are implicitly registered by compiler
     const marks = markSpecs(node.specs);
 
     switch (node.kind) {
@@ -208,7 +210,6 @@ async function hoverHandler(value) {
             (await query.node(node.parent_number))?.name || "Never"
           )
         );
-        node.sqname && marks.push(new mark.Strong(node.sqname));
         break;
       case "ExpansionDecl":
         if (node.ref_ptr) {
@@ -260,7 +261,14 @@ async function hoverHandler(value) {
     }
 
     if (node.kind !== "ExpansionDecl") {
-      node.name && marks.push(new mark.Strong(node.name));
+      if (node.name) {
+        // The name field in MacroDecl is actually the parameters '()'
+        marks.push(
+          new (node.kind === "MacroDecl" ? mark.Emphasis : mark.Strong)(
+            node.name
+          )
+        );
+      }
 
       if (node.class) {
         const children = await query.children(node.number);
@@ -285,6 +293,7 @@ async function hoverHandler(value) {
             mark.thematicBreak,
             mark.newLine,
             new mark.CodeInline(filename),
+            mark.space,
             new mark.Emphasis("provided")
           );
       }
