@@ -781,7 +781,10 @@ async function onTextDocumentSemanticTokens({ textDocument, range }) {
 
   return {
     data: items
-      .sort((a, b) => a.line - b.line)
+      .sort((a, b) => {
+        const d = a.line - b.line;
+        return d == 0 ? a.character - b.character : d;
+      })
       .flatMap((item, i, items) => {
         if (i == 0)
           return [
