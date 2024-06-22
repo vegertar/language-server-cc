@@ -40,13 +40,13 @@ export class Code extends Inline {
 
 export class Emphasis extends Inline {
   toText() {
-    return `*${this.content}*`;
+    return `*${this.content.replace(/[_*]/g, "\\$&")}*`;
   }
 }
 
 export class Strong extends Emphasis {
   toText() {
-    return `**${this.content}**`;
+    return `**${this.content.replace(/[_*]/g, "\\$&")}**`;
   }
 }
 

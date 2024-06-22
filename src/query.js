@@ -41,6 +41,9 @@ import sqlite3 from "sqlite3";
  *   end_src: number,
  *   end_row: number,
  *   end_col: number,
+ *   exp_src: number,
+ *   exp_row: number,
+ *   exp_col: number,
  *   src: number,
  *   row: number,
  *   col: number,
@@ -124,6 +127,27 @@ export default class Query {
             reject(new Error(`src: not found file: ${file}`));
           } else {
             resolve(row.number);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   *
+   * @param {Node} param0
+   * @returns {Promise<Range | undefined>}
+   */
+  exp({ exp_src, exp_row, exp_col }) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        "SELECT * FROM loc WHERE begin_src = $src AND begin_row = $row AND begin_col = $col",
+        { $src: exp_src, $row: exp_row, $col: exp_col },
+        (err, row) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(row);
           }
         }
       );
@@ -421,6 +445,50 @@ export default class Query {
           resolve(rows);
         }
       });
+    });
+  }
+
+  /**
+   *
+   * @param {number} number
+   * @returns {Promise<Node | undefined>}
+   */
+  caller(number) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        "SELECT * FROM ast WHERE kind = 'FunctionDecl' AND parent_number = 0 AND number < $number AND $number <= final_number",
+        { $number: number },
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   *
+   * @param {Node} definition
+   * @returns {Promise<Node[]>}
+   */
+  callees(definition) {
+    const { number, final_number } = definition;
+    return new Promise((resolve, reject) => {
+      // TODO: Implement a more precise query to look for DeclRefExpr under CallExpr, which is not yet recorded.
+      this.db.all(
+        "SELECT * FROM ast WHERE $number < number AND number <= $final_number AND kind = 'DeclRefExpr' AND ref_kind = 'Function'",
+        { $number: number, $final_number: final_number },
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
     });
   }
 }

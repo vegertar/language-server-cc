@@ -19,8 +19,9 @@ const query = new Query();
  * @param {string} uri
  */
 async function getUriInfo(uri) {
-  const { document: doc, pathname } = await getDocument(uri);
-  const src = await query.src(pathname);
+  const url = new URL(uri);
+  const doc = await getDocument(uri);
+  const src = await query.src(url.pathname);
   return { doc, src };
 }
 
@@ -45,6 +46,32 @@ const symbolKinds = Object.assign(
 );
 
 /**
+ *
+ * @param {import("./query.js").Node} node
+ * @returns {number}
+ */
+function getSymbolKind(node) {
+  switch (node.kind) {
+    case "FunctionDecl":
+      return symbolKinds.Function;
+
+    case "RecordDecl":
+      if (node.class === 1) return symbolKinds.Struct;
+      else if (node.class === 2) return symbolKinds.Union;
+      else if (node.class === 3) return symbolKinds.Enum;
+      else break;
+
+    case "VarDecl":
+      return symbolKinds.Variable;
+
+    case "TypedefDecl":
+      return symbolKinds.TypeAlias;
+  }
+
+  return 0;
+}
+
+/**
  * Semantic Tokens
  */
 const tokenTypes = ["macro", "comment"];
@@ -56,7 +83,7 @@ const tokenTypesMap = Object.fromEntries(tokenTypes.map((v, i) => [v, i]));
  *
  * @param {import("./query.js").Semantics} semantics
  */
-function tokenSemantics(semantics) {
+function getTokenSemantics(semantics) {
   switch (semantics) {
     case SEMANTIC_EXPANSION:
       return [tokenTypesMap["macro"], 0];
@@ -71,7 +98,7 @@ function tokenSemantics(semantics) {
  * @param {mark.Mark[]} [marks]
  * @returns
  */
-function markSpecs(specs, marks = []) {
+function getSpecsMarks(specs, marks = []) {
   for (const spec in specMarks) {
     if (specs & parseInt(spec)) {
       marks.push(specMarks[spec], mark.space);
@@ -82,20 +109,21 @@ function markSpecs(specs, marks = []) {
 
 /**
  *
- * @param {string} uri
+ * @param {string | URL} uri
  * @returns
  */
 async function getDocument(uri) {
-  const pathname = new URL(uri).pathname;
-  let document = documents.get(uri);
+  const key = typeof uri === "string" ? uri : uri.toString();
+  let document = documents.get(key);
   if (!document) {
-    const file = await open(pathname);
+    const url = typeof uri === "string" ? new URL(uri) : uri;
+    const file = await open(url.pathname);
     const content = await file.readFile({ encoding: "utf8" });
     await file.close();
-    document = TextDocument.create(uri, "", 0, content);
-    documents.set(uri, document);
+    document = TextDocument.create(key, "", 0, content);
+    documents.set(key, document);
   }
-  return { document, pathname };
+  return document;
 }
 
 /**
@@ -119,10 +147,7 @@ function isPartOfIdentifier(ch) {
  */
 function getTokenHead(doc, start) {
   let offset = doc.offsetAt(start);
-  let end = doc.positionAt(offset + 1);
-
-  if (!isPartOfIdentifier(doc.getText({ start, end }).charCodeAt(0)))
-    return start;
+  let end;
 
   do {
     end = start;
@@ -186,7 +211,7 @@ async function hoverHandler(value) {
   if (node) {
     // TODO: add implicit label to implicitly declared functions
     // TODO: add hover info for those macros, e.g. __has_attribute,  are implicitly registered by compiler
-    const marks = markSpecs(node.specs);
+    const marks = getSpecsMarks(node.specs);
 
     switch (node.kind) {
       case "TypedefDecl":
@@ -312,12 +337,7 @@ async function hoverHandler(value) {
 async function declarationHandler(value) {
   if (value.link) {
     const definition = value.link[0];
-    /** @type {import("./query.js").Node | undefined} */
-    let decl = definition;
-    while (decl?.prev) {
-      decl = await query.node(decl.prev);
-      if (decl) value.link.push(decl);
-    }
+    value.link.push(...(await getDeclarations(definition)));
   }
 
   return value;
@@ -333,38 +353,7 @@ async function definitionHandler(value) {
 
   if (node) {
     value.link = [];
-    let decl = node.ref_ptr ? await query.node(node.ref_ptr) : node;
-    switch (decl?.kind) {
-      case "FunctionDecl":
-        /**
-         * Try to find the definition as much as possible.
-         *
-         * C/C++ allows multiple declarations and only one definition, e.g.
-         *   void foo();   // decl 1
-         *   void foo();   // decl 2
-         *   ...
-         *   void foo();   // decl N
-         *   void foo() {} // definition
-         *
-         * Ordinarily, when we refer to the definition of a function, we mean the
-         * specific function definition with a body, so we should always reach
-         * the line "void foo() {}".
-         *
-         * However, in some cases, the definition is optional, e.g., sizeof(&foo);.
-         * In this case, we should point to the last declaration rather than
-         * leaving a null result or retaining the initial declaration we started with.
-         * This allows us to chain all declarations in the next handler.
-         */
-
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const next = await query.next(decl.ptr);
-          if (!next) break;
-          decl = next;
-        }
-        break;
-    }
-
+    const decl = await getDefinition(node);
     if (decl) value.link.push(decl);
   }
 
@@ -438,6 +427,101 @@ function getRanges(node, doc) {
 
 /**
  *
+ * @param {import("./query.js").Node} node
+ */
+async function getDefinition(node) {
+  let decl = node.ref_ptr ? await query.node(node.ref_ptr) : node;
+  switch (decl?.kind) {
+    case "FunctionDecl":
+      /**
+       * Try to find the definition as much as possible.
+       *
+       * C/C++ allows multiple declarations and only one definition, e.g.
+       *   void foo();   // decl 1
+       *   void foo();   // decl 2
+       *   ...
+       *   void foo();   // decl N
+       *   void foo() {} // definition
+       *
+       * Ordinarily, when we refer to the definition of a function, we mean the
+       * specific function definition with a body, so we should always reach
+       * the line "void foo() {}".
+       *
+       * However, in some cases, the definition is optional, e.g., sizeof(&foo);.
+       * In this case, we should point to the last declaration rather than
+       * leaving a null result or retaining the initial declaration we started with.
+       * This allows us to chain all declarations in the next handler.
+       */
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const next = await query.next(decl.ptr);
+        if (!next) break;
+        decl = next;
+      }
+      break;
+  }
+
+  return decl;
+}
+
+/**
+ *
+ * @param {import("./query.js").Node} definition
+ */
+async function* getDeclaration(definition) {
+  /** @type {import("./query.js").Node | undefined} */
+  let decl = definition;
+  while (decl?.prev) {
+    decl = await query.node(decl.prev);
+    if (decl) yield decl;
+  }
+}
+
+/**
+ *
+ * @param {import("./query.js").Node} definition
+ */
+async function getDeclarations(definition) {
+  /** @type {import("./query.js").Node[]} */
+  const declarations = [];
+
+  for await (const decl of getDeclaration(definition)) {
+    declarations.push(decl);
+  }
+
+  return declarations;
+}
+
+/**
+ *
+ * @param {import("./query.js").Node} node
+ * @returns
+ */
+async function getUri(node) {
+  const filename = await query.filename(node.begin_src);
+  // Skip the builtin files
+  if (!filename || filename.startsWith("<")) return;
+
+  return "file://" + filename;
+}
+
+/**
+ *
+ * @param {import("./query.js").Node} node
+ * @returns
+ */
+async function getLink(node) {
+  const uri = await getUri(node);
+  if (!uri) return;
+
+  const doc = await getDocument(uri);
+  const result = getRanges(node, doc);
+  return { doc, uri, ...result };
+}
+
+/**
+ *
  * @param {Value} value
  * @returns {Promise<import("vscode-languageserver/node.js").LocationLink[] | null>}
  */
@@ -447,19 +531,13 @@ async function linkHandler(value) {
     const links = [];
 
     for (const node of value.link) {
-      const filename = await query.filename(node.begin_src);
-      // Skip the builtin files
-      if (!filename || filename.startsWith("<")) continue;
-
-      const uri = "file://" + filename;
-      const { document: doc } = await getDocument(uri);
-
-      const result = getRanges(node, doc);
-      links.push({
-        targetUri: uri,
-        targetRange: result.range,
-        targetSelectionRange: result.selectionRange,
-      });
+      const link = await getLink(node);
+      if (link)
+        links.push({
+          targetUri: link.uri,
+          targetRange: link.range,
+          targetSelectionRange: link.selectionRange,
+        });
     }
     return links;
   }
@@ -600,6 +678,7 @@ connection.onInitialize(async ({ workspaceFolders, initializationOptions }) => {
       typeDefinitionProvider: true,
       implementationProvider: true,
       referencesProvider: true,
+      callHierarchyProvider: true,
       documentSymbolProvider: true,
       documentLinkProvider: { resolveProvider: true },
       semanticTokensProvider: {
@@ -632,7 +711,8 @@ connection.onDocumentLinks(async ({ textDocument }) => {
   const links = [];
 
   for (const node of nodes) {
-    if (!node.desugared_type) continue;
+    if (!node.name || !node.desugared_type) continue;
+
     links.push({
       range: {
         start: {
@@ -645,7 +725,11 @@ connection.onDocumentLinks(async ({ textDocument }) => {
         },
       },
       target: "file://" + node.desugared_type,
-      tooltip: `_#${node.name}_ **"${node.desugared_type}"**`,
+      tooltip: new mark.Mark([
+        new mark.Emphasis("#" + node.name),
+        mark.space,
+        new mark.Strong(node.desugared_type),
+      ]).toText(),
     });
   }
 
@@ -659,37 +743,12 @@ connection.onDocumentSymbol(async ({ textDocument }) => {
   const symbols = [];
 
   for (const node of nodes) {
-    if (!node.name) continue;
-
-    let kind = 0;
-    switch (node.kind) {
-      case "FunctionDecl":
-        kind = symbolKinds.Function;
-        break;
-
-      case "RecordDecl":
-        if (node.class === 1) kind = symbolKinds.Struct;
-        else if (node.class === 2) kind = symbolKinds.Union;
-        else if (node.class === 3) kind = symbolKinds.Enum;
-        break;
-
-      case "VarDecl":
-        kind = symbolKinds.Variable;
-        break;
-
-      case "TypedefDecl":
-        kind = symbolKinds.TypeAlias;
-        break;
-    }
-
-    if (!kind || node.row == 0) continue;
+    /** @type {any} */
+    const kind = getSymbolKind(node);
+    if (!kind || !node.name || !node.row) continue;
 
     const ranges = getRanges(node, doc);
-    symbols.push({
-      name: node.name,
-      kind: /** @type {any} */ (kind),
-      ...ranges,
-    });
+    symbols.push({ name: node.name, kind, ...ranges });
   }
 
   return symbols;
@@ -774,7 +833,7 @@ async function onTextDocumentSemanticTokens({ textDocument, range }) {
 
   for (const value of semanticRanges) {
     let { begin_row, begin_col, end_row, end_col, semantics } = value;
-    const [tokenType, tokenModifier] = tokenSemantics(semantics);
+    const [tokenType, tokenModifier] = getTokenSemantics(semantics);
     let offset = 0;
 
     do {
@@ -850,6 +909,199 @@ connection.onRequest(
   "textDocument/semanticTokens/range",
   onTextDocumentSemanticTokens
 );
+
+/**
+ *
+ * @param {import("vscode-languageserver/node.js").CallHierarchyPrepareParams} param0
+ */
+function prepareCallHierarchyHandler({ textDocument }) {
+  /**
+   *
+   * @param {Value} value
+   * @returns {import("vscode-languageserver/node.js").CallHierarchyItem[] | null}
+   */
+  return ({ doc, link, node }) => {
+    if (!link || !node || !node.name) return null;
+    /** @type {any} */
+    const kind = getSymbolKind(node);
+    if (!kind) return null;
+
+    return [
+      {
+        kind,
+        name: node.name,
+        detail: node.qualified_type,
+        uri: textDocument.uri,
+        data: link,
+        ...getRanges(node, doc),
+      },
+    ];
+  };
+}
+
+/**
+ *
+ * @param {import("vscode-languageserver/node.js").CallHierarchyPrepareParams} param
+ * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyItem[] | null>}
+ */
+async function onPrepareCallHierarchy(param) {
+  let value = /** @type {any} */ (param);
+  for (const handler of [
+    positionHandler,
+    tokenHandler,
+    definitionHandler,
+    declarationHandler,
+    prepareCallHierarchyHandler(param),
+  ]) {
+    value = await handler(value);
+  }
+  return value;
+}
+
+/**
+ *
+ * @param {import("vscode-languageserver/node.js").CallHierarchyIncomingCallsParams} param0
+ * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyIncomingCall[] | null>}
+ */
+async function onIncomingCalls({ item }) {
+  if (!item.data) return null;
+
+  /** @type {import("./query.js").Node[]} */
+  const declarations = item.data;
+  const refs = await query.refs(declarations.map((x) => x.ptr));
+
+  /** @type {Record<string, import("./query.js").Node[]>} */
+  const group = {};
+  for (const node of refs) {
+    const from = await query.caller(node.number);
+    if (!from) continue;
+
+    const ptr = from.ptr;
+    if (!group[ptr]) group[ptr] = [from];
+
+    group[ptr].push(node);
+  }
+
+  /** @type {import("vscode-languageserver/node.js").CallHierarchyIncomingCall[]} */
+  const result = [];
+  for (const key in group) {
+    const [from, ...nodes] = group[key];
+    const link = await getLink(from);
+    if (!link) continue;
+
+    /** @type {any} */
+    const kind = getSymbolKind(from);
+    if (!kind || !from.name) continue;
+
+    /** @type {import("vscode-languageserver/node.js").Range[]} */
+    const fromRanges = [];
+    for (const node of nodes) {
+      if (node.exp_row) {
+        const range = await query.exp(node);
+        if (range)
+          fromRanges.push({
+            start: {
+              line: range.begin_row - 1,
+              character: range.begin_col - 1,
+            },
+            end: { line: range.end_row - 1, character: range.end_col - 1 },
+          });
+      } else {
+        fromRanges.push(getRanges(node, link.doc).selectionRange);
+      }
+    }
+
+    result.push({
+      from: {
+        kind,
+        name: from.name,
+        detail: from.qualified_type,
+        uri: link.uri,
+        range: link.range,
+        selectionRange: link.selectionRange,
+        data: [from, ...(await getDeclarations(from))],
+      },
+      fromRanges,
+    });
+  }
+
+  return result;
+}
+
+/**
+ *
+ * @param {import("vscode-languageserver/node.js").CallHierarchyOutgoingCallsParams} param0
+ * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyOutgoingCall[] | null>}
+ */
+async function onOutgoingCalls({ item }) {
+  if (!item.data) return null;
+
+  /** @type {import("./query.js").Node} */
+  const definition = item.data[0];
+  const uri = await getUri(definition);
+  if (!uri) return null;
+
+  const doc = await getDocument(uri);
+  const callees = await query.callees(definition);
+
+  /** @type {Record<string, [import("./query.js").Node, ...import("vscode-languageserver/node.js").Range[]]>} */
+  const group = {};
+  for (const node of callees) {
+    const to = await getDefinition(node);
+    if (!to) continue;
+
+    const ptr = to.ptr;
+    if (!group[ptr]) group[ptr] = [to];
+
+    const fromRanges = group[ptr];
+    if (node.exp_row) {
+      const range = await query.exp(node);
+      if (range)
+        fromRanges.push({
+          start: { line: range.begin_row - 1, character: range.begin_col - 1 },
+          end: { line: range.end_row - 1, character: range.end_col - 1 },
+        });
+    } else {
+      fromRanges.push(getRanges(node, doc).selectionRange);
+    }
+  }
+
+  /** @type {import("vscode-languageserver/node.js").CallHierarchyOutgoingCall[]} */
+  const result = [];
+  for (const key in group) {
+    const [to, ...fromRanges] = group[key];
+    const link = await getLink(to);
+    if (!link) continue;
+
+    /** @type {any} */
+    const kind = getSymbolKind(to);
+    if (!kind || !to.name) continue;
+
+    result.push({
+      to: {
+        kind,
+        name: to.name,
+        detail: to.qualified_type,
+        uri: link.uri,
+        range: link.range,
+        selectionRange: link.selectionRange,
+        data: [to],
+      },
+      fromRanges,
+    });
+  }
+
+  return result;
+}
+
+connection.onRequest(
+  "textDocument/prepareCallHierarchy",
+  onPrepareCallHierarchy
+);
+
+connection.onRequest("callHierarchy/incomingCalls", onIncomingCalls);
+
+connection.onRequest("callHierarchy/outgoingCalls", onOutgoingCalls);
 
 // Listen on the connection
 connection.listen();
