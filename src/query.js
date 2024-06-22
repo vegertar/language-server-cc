@@ -477,9 +477,8 @@ export default class Query {
   callees(definition) {
     const { number, final_number } = definition;
     return new Promise((resolve, reject) => {
-      // TODO: Implement a more precise query to look for DeclRefExpr under CallExpr, which is not yet recorded.
       this.db.all(
-        "SELECT * FROM ast WHERE $number < number AND number <= $final_number AND kind = 'DeclRefExpr' AND ref_kind = 'Function'",
+        "SELECT * FROM ast, json_each(ast.ancestors) WHERE $number < number AND number <= $final_number AND kind = 'DeclRefExpr' AND ref_kind = 'Function' AND json_each.value = 'CallExpr'",
         { $number: number, $final_number: final_number },
         (err, rows) => {
           if (err) {
