@@ -5,6 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import {
   createConnection,
+  DocumentHighlightKind,
   ProposedFeatures,
   SymbolKind,
 } from "vscode-languageserver/node.js";
@@ -377,7 +378,29 @@ async function typeDefinitionHandler(value) {
 }
 
 /**
- * @param {import("vscode-languageserver/node.js").ReferenceContext} context
+ *
+ * @param {Value} value
+ */
+function documentHighlightHandler(value) {
+  if (value.link) {
+    /** @type {import("vscode-languageserver/node.js").DocumentHighlight[]} */
+    const result = [];
+    for (const node of value.link) {
+      if (node.begin_src === value.src) {
+        result.push({
+          range: getRanges(node, value.doc).selectionRange,
+          kind: DocumentHighlightKind.Read,
+        });
+      }
+    }
+    return result;
+  }
+}
+
+/**
+ * @param {import("vscode-languageserver/node.js").ReferenceContext & {
+ *  scoped?: boolean
+ * }} context
  */
 function referencesHandler(context) {
   /**
@@ -387,7 +410,15 @@ function referencesHandler(context) {
    */
   return async (value) => {
     if (value.link) {
-      const refs = await query.refs(value.link.map((node) => node.ptr));
+      const definition = value.link[0];
+      const refs = await query.refs(
+        value.link.map((node) => node.ptr),
+        {
+          member: definition.kind === "FieldDecl",
+          src: context.scoped ? value.src : undefined,
+        }
+      );
+
       if (context.includeDeclaration) value.link.push(...refs);
       else value.link = refs;
     }
@@ -409,10 +440,15 @@ function getRanges(node, doc) {
           line: node.row - 1,
           character: node.col - 1,
         }
-      : {
-          line: node.begin_row - 1,
-          character: node.begin_col - 1,
-        };
+      : node.kind === "MemberExpr"
+        ? {
+            line: node.end_row - 1,
+            character: node.end_col - 1,
+          }
+        : {
+            line: node.begin_row - 1,
+            character: node.begin_col - 1,
+          };
 
   const nameEndOffset =
     doc.offsetAt(namePosition) + (node.name ? node.name.length : 1);
@@ -693,6 +729,7 @@ connection.onInitialize(async ({ workspaceFolders, initializationOptions }) => {
       definitionProvider: true,
       typeDefinitionProvider: true,
       implementationProvider: true,
+      documentHighlightProvider: true,
       referencesProvider: true,
       callHierarchyProvider: true,
       documentSymbolProvider: true,
@@ -833,6 +870,21 @@ connection.onHover(async (param) => {
     tokenHandler,
     hoverHandler,
     markHandler,
+  ]) {
+    value = await handler(value);
+  }
+  return value;
+});
+
+connection.onDocumentHighlight(async (param) => {
+  let value = /** @type {any} */ (param);
+  for (const handler of [
+    positionHandler,
+    tokenHandler,
+    definitionHandler,
+    declarationHandler,
+    referencesHandler({ includeDeclaration: true, scoped: true }),
+    documentHighlightHandler,
   ]) {
     value = await handler(value);
   }

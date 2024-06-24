@@ -317,12 +317,14 @@ export default class Query {
 
   /**
    * @param {string[]} ptrs
+   * @param {{member?: boolean, src?: number}} [option]
    * @returns {Promise<Node[]>}
    */
-  refs(ptrs) {
+  refs(ptrs, option) {
+    const { member, src } = option || {};
     return new Promise((resolve, reject) => {
       this.db.all(
-        `SELECT * FROM ast WHERE kind = 'DeclRefExpr' AND ref_ptr IN (${Array(ptrs.length).fill("?")})`,
+        `SELECT * FROM ast WHERE ${src != null ? `begin_src = ${src} AND` : ""} kind = '${member ? "MemberExpr" : "DeclRefExpr"}' AND ref_ptr IN (${Array(ptrs.length).fill("?")})`,
         ptrs,
         (err, rows) => {
           if (err) {
