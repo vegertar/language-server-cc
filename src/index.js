@@ -309,19 +309,11 @@ async function hoverHandler(value) {
         if (desugared_type && desugared_type !== qualified_type)
           marks.push(mark.space, new mark.Code(desugared_type));
       }
+    }
 
-      if (node.begin_src != -1) {
-        const filename = await query.filename(node.begin_src);
-        if (filename)
-          marks.push(
-            mark.newLine,
-            mark.thematicBreak,
-            mark.newLine,
-            new mark.CodeInline(filename),
-            mark.space,
-            new mark.Emphasis("provided")
-          );
-      }
+    if (node.begin_src != -1 && node.begin_src != value.src) {
+      const filename = await query.filename(node.begin_src);
+      if (filename) marks.push(new mark.Provider(filename));
     }
 
     value.mark = new mark.Mark(marks);
@@ -352,9 +344,33 @@ async function definitionHandler(value) {
   const { node } = value;
 
   if (node) {
-    value.link = [];
     const decl = await getDefinition(node);
-    if (decl) value.link.push(decl);
+    if (decl) value.link = [decl];
+  }
+
+  return value;
+}
+
+/**
+ *
+ * @param {Value} value
+ * @returns {Promise<Value>}
+ */
+async function typeDefinitionHandler(value) {
+  const { node } = value;
+
+  if (node) {
+    switch (node.kind) {
+      case "VarDecl":
+      case "ParmVarDecl":
+      case "FunctionDecl":
+      case "FieldDecl":
+        if (node.type_ptr) {
+          const type = await query.node(node.type_ptr);
+          if (type) value.link = [type];
+        }
+        break;
+    }
   }
 
   return value;
@@ -774,6 +790,19 @@ connection.onDeclaration(async (param) => {
     tokenHandler,
     definitionHandler,
     declarationHandler,
+    linkHandler,
+  ]) {
+    value = await handler(value);
+  }
+  return value;
+});
+
+connection.onTypeDefinition(async (param) => {
+  let value = /** @type {any} */ (param);
+  for (const handler of [
+    positionHandler,
+    tokenHandler,
+    typeDefinitionHandler,
     linkHandler,
   ]) {
     value = await handler(value);

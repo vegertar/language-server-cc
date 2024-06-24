@@ -121,6 +121,21 @@ export class BulletListItem extends Mark {
   }
 }
 
+export class Provider extends Mark {
+  constructor(provider) {
+    super([
+      newLine,
+      thematicBreak,
+      newLine,
+      new CodeInline(provider),
+      space,
+      new Emphasis("provided"),
+    ]);
+
+    this.provider = provider;
+  }
+}
+
 export const space = new Mark(" ");
 
 export const colon = new Mark(":");

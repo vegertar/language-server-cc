@@ -35,6 +35,7 @@ import sqlite3 from "sqlite3";
  *   ptr: string,
  *   prev: string | null | undefined,
  *   ref_ptr: string | null | undefined,
+ *   type_ptr: string | null | undefined,
  *   begin_src: number,
  *   begin_row: number,
  *   begin_col: number,
