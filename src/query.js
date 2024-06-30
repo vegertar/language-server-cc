@@ -35,6 +35,7 @@ import sqlite3 from "sqlite3";
  *   ptr: string,
  *   prev: string | null | undefined,
  *   ref_ptr: string | null | undefined,
+ *   def_ptr: string | null | undefined,
  *   type_ptr: string | null | undefined,
  *   begin_src: number,
  *   begin_row: number,
@@ -257,62 +258,80 @@ export default class Query {
 
   /**
    *
+   * @param {Node} node
+   * @returns {Promise<Node | undefined>}
+   */
+  async def(node) {
+    const decl = node.ref_ptr ? await this.node(node.ref_ptr) : node;
+    return decl?.def_ptr ? await this.node(decl.def_ptr) : decl;
+  }
+
+  /**
+   * Find declarations by definition.
+   * @overload
+   * @param {Node} definition
+   * @returns {Promise<Node[]>}
+   */
+
+  /**
+   * Find the declaration by position.
+   * @overload
    * @param {number} src
    * @param {import("vscode-languageserver/node").Position} pos
    * @returns {Promise<Node | undefined>}
    */
-  async decl(src, pos) {
-    /** @type {Node | undefined} */
-    let node = await new Promise((resolve, reject) => {
-      /**
-       * TODO: There might be multiple ExpansionDecl at the given position, e.g.
-       *  #define A(a) a+B
-       *
-       *  #define B 1
-       *  int one = A(0);
-       *  #undef B
-       *  #define B 2
-       *  int two = A(1);
-       */
-      this.db.get(
-        "SELECT * FROM ast WHERE begin_src = $src AND begin_row = $row AND begin_col = $col",
-        { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
-        (err, row) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(row);
-          }
-        }
-      );
-    });
-
-    if (node?.ref_ptr) {
-      node = await this.node(node.ref_ptr);
-    }
-
-    if (node?.kind.endsWith("Decl")) return node;
-  }
 
   /**
-   *
-   * @param {string} ptr
-   * @returns {Promise<Node | undefined>}
+   * @param {...any} params
+   * @returns {Promise<any>}
    */
-  next(ptr) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        "SELECT * FROM ast WHERE prev = $ptr",
-        { $ptr: ptr },
-        (err, row) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(row);
+  async decl(...params) {
+    if (params.length === 2) {
+      const [src, pos] = params;
+
+      /** @type {Node | undefined} */
+      const node = await new Promise((resolve, reject) => {
+        /**
+         * TODO: There might be multiple ExpansionDecl at the given position, e.g.
+         *  #define A(a) a+B
+         *
+         *  #define B 1
+         *  int one = A(0);
+         *  #undef B
+         *  #define B 2
+         *  int two = A(1);
+         */
+        this.db.get(
+          "SELECT * FROM ast WHERE begin_src = $src AND begin_row = $row AND begin_col = $col",
+          { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
+          (err, row) => {
+            if (err) {
+              reject(err);
+            } else {
+              resolve(row);
+            }
           }
-        }
-      );
-    });
+        );
+      });
+
+      const decl = node?.ref_ptr ? await this.node(node.ref_ptr) : node;
+      if (decl?.kind.endsWith("Decl")) return decl;
+    } else {
+      const [definition] = params;
+      return new Promise((resolve, reject) => {
+        this.db.all(
+          "SELECT * FROM ast WHERE def_ptr = $ptr",
+          { $ptr: definition.ptr },
+          (err, rows) => {
+            if (err) {
+              reject(err);
+            } else {
+              resolve(rows);
+            }
+          }
+        );
+      });
+    }
   }
 
   /**

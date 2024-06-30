@@ -330,7 +330,7 @@ async function hoverHandler(value) {
 async function declarationHandler(value) {
   if (value.link) {
     const definition = value.link[0];
-    value.link.push(...(await getDeclarations(definition)));
+    value.link.push(...(await query.decl(definition)));
   }
 
   return value;
@@ -345,7 +345,7 @@ async function definitionHandler(value) {
   const { node } = value;
 
   if (node) {
-    const decl = await getDefinition(node);
+    const decl = await query.def(node);
     if (decl) value.link = [decl];
   }
 
@@ -389,7 +389,6 @@ function documentHighlightHandler(value) {
       if (node.begin_src === value.src) {
         result.push({
           range: getRanges(node, value.doc).selectionRange,
-          kind: DocumentHighlightKind.Read,
         });
       }
     }
@@ -475,74 +474,6 @@ function getRanges(node, doc) {
   };
 
   return { range, selectionRange };
-}
-
-/**
- *
- * @param {import("./query.js").Node} node
- */
-async function getDefinition(node) {
-  let decl = node.ref_ptr ? await query.node(node.ref_ptr) : node;
-  switch (decl?.kind) {
-    case "FunctionDecl":
-      /**
-       * Try to find the definition as much as possible.
-       *
-       * C/C++ allows multiple declarations and only one definition, e.g.
-       *   void foo();   // decl 1
-       *   void foo();   // decl 2
-       *   ...
-       *   void foo();   // decl N
-       *   void foo() {} // definition
-       *
-       * Ordinarily, when we refer to the definition of a function, we mean the
-       * specific function definition with a body, so we should always reach
-       * the line "void foo() {}".
-       *
-       * However, in some cases, the definition is optional, e.g., sizeof(&foo);.
-       * In this case, we should point to the last declaration rather than
-       * leaving a null result or retaining the initial declaration we started with.
-       * This allows us to chain all declarations in the next handler.
-       */
-
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const next = await query.next(decl.ptr);
-        if (!next) break;
-        decl = next;
-      }
-      break;
-  }
-
-  return decl;
-}
-
-/**
- *
- * @param {import("./query.js").Node} definition
- */
-async function* getDeclaration(definition) {
-  /** @type {import("./query.js").Node | undefined} */
-  let decl = definition;
-  while (decl?.prev) {
-    decl = await query.node(decl.prev);
-    if (decl) yield decl;
-  }
-}
-
-/**
- *
- * @param {import("./query.js").Node} definition
- */
-async function getDeclarations(definition) {
-  /** @type {import("./query.js").Node[]} */
-  const declarations = [];
-
-  for await (const decl of getDeclaration(definition)) {
-    declarations.push(decl);
-  }
-
-  return declarations;
 }
 
 /**
@@ -1100,7 +1031,7 @@ async function onIncomingCalls({ item }) {
         uri: link.uri,
         range: link.range,
         selectionRange: link.selectionRange,
-        data: [from, ...(await getDeclarations(from))],
+        data: [from, ...(await query.decl(from))],
       },
       fromRanges,
     });
@@ -1128,7 +1059,7 @@ async function onOutgoingCalls({ item }) {
   /** @type {Record<string, [import("./query.js").Node, ...import("vscode-languageserver/node.js").Range[]]>} */
   const group = {};
   for (const node of callees) {
-    const to = await getDefinition(node);
+    const to = await query.def(node);
     if (!to) continue;
 
     const ptr = to.ptr;
