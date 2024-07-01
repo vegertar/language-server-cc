@@ -228,13 +228,7 @@ async function hoverHandler(value) {
         }
         break;
       case "MacroDecl":
-        marks.push(
-          new mark.Emphasis("#define"),
-          mark.space,
-          new mark.Strong(
-            (await query.node(decl.parent_number))?.name || "Never"
-          )
-        );
+        marks.push(new mark.Emphasis("#define"), mark.space);
         break;
       case "ExpansionDecl":
         if (decl.ref_ptr) {
@@ -287,12 +281,7 @@ async function hoverHandler(value) {
 
     if (decl.kind !== "ExpansionDecl") {
       if (decl.name) {
-        // The name field in MacroDecl is actually the parameters '()'
-        marks.push(
-          new (decl.kind === "MacroDecl" ? mark.Emphasis : mark.Strong)(
-            decl.name
-          )
-        );
+        marks.push(new mark.Strong(decl.name));
       }
 
       if (decl.class) {
@@ -310,7 +299,7 @@ async function hoverHandler(value) {
       } else {
         const { qualified_type, desugared_type } = decl;
         if (qualified_type)
-          marks.push(mark.colon, mark.space, new mark.Emphasis(qualified_type));
+          marks.push(mark.space, new mark.Emphasis(qualified_type));
         if (desugared_type && desugared_type !== qualified_type)
           marks.push(mark.space, new mark.Code(desugared_type));
       }
