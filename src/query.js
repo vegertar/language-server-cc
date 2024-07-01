@@ -274,54 +274,28 @@ export default class Query {
    */
 
   /**
-   * Find the declaration by position.
+   * Find declarations by position.
    * @overload
    * @param {number} src
    * @param {import("vscode-languageserver/node").Position} pos
-   * @returns {Promise<Node | undefined>}
+   * @returns {Promise<Node[]>}
    */
 
   /**
    * @param {...any} params
-   * @returns {Promise<any>}
    */
   async decl(...params) {
     if (params.length === 2) {
-      const [src, pos] = params;
+      const [src, pos] =
+        /** @type {[src:number, pos: import("vscode-languageserver/node").Position]} */ (
+          params
+        );
 
-      /** @type {Node | undefined} */
-      const node = await new Promise((resolve, reject) => {
-        /**
-         * TODO: There might be multiple ExpansionDecl at the given position, e.g.
-         *  #define A(a) a+B
-         *
-         *  #define B 1
-         *  int one = A(0);
-         *  #undef B
-         *  #define B 2
-         *  int two = A(1);
-         */
-        this.db.get(
+      /** @type {Node[]} */
+      const nodes = await new Promise((resolve, reject) => {
+        this.db.all(
           "SELECT * FROM ast WHERE begin_src = $src AND begin_row = $row AND begin_col = $col",
           { $src: src, $row: pos.line + 1, $col: pos.character + 1 },
-          (err, row) => {
-            if (err) {
-              reject(err);
-            } else {
-              resolve(row);
-            }
-          }
-        );
-      });
-
-      const decl = node?.ref_ptr ? await this.node(node.ref_ptr) : node;
-      if (decl?.kind.endsWith("Decl")) return decl;
-    } else {
-      const [definition] = params;
-      return new Promise((resolve, reject) => {
-        this.db.all(
-          "SELECT * FROM ast WHERE def_ptr = $ptr",
-          { $ptr: definition.ptr },
           (err, rows) => {
             if (err) {
               reject(err);
@@ -331,7 +305,30 @@ export default class Query {
           }
         );
       });
+
+      /** @type {Node[]} */
+      const declarations = [];
+      for (const node of nodes) {
+        const decl = node.ref_ptr ? await this.node(node.ref_ptr) : node;
+        if (decl?.kind.endsWith("Decl")) declarations.push(decl);
+      }
+      return declarations;
     }
+
+    const [definition] = /** @type {[Node]} */ (params);
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        "SELECT * FROM ast WHERE def_ptr = $ptr",
+        { $ptr: definition.ptr },
+        (err, rows) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
+    });
   }
 
   /**

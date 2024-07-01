@@ -105,7 +105,7 @@ function createStatus(context: ExtensionContext) {
   const update = (event?: ConfigurationChangeEvent) => {
     const section = "languageServerCC.tu";
     const tu = workspace.getConfiguration().get(section);
-    status.text = `${tu}`;
+    status.text = `\$(project) ${tu || "<<<NULL>>>"}`;
     status.tooltip = `Translation Unit: ${tu}`;
     status.backgroundColor = tu
       ? undefined

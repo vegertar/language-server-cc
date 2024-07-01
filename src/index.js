@@ -5,7 +5,6 @@ import * as fs from "fs";
 import * as path from "path";
 import {
   createConnection,
-  DocumentHighlightKind,
   ProposedFeatures,
   SymbolKind,
 } from "vscode-languageserver/node.js";
@@ -166,8 +165,8 @@ function getTokenHead(doc, start) {
  *   pos: import("vscode-languageserver/node.js").Position,
  *   loc: import("vscode-languageserver/node.js").Position | null,
  *   token: import("./query.js").Token,
- *   node?: import("./query.js").Node,
- *   link?: import("./query.js").Node[],
+ *   decl?: (import("./query.js").Node | undefined)[],
+ *   link?: (import("./query.js").Node[] | undefined)[],
  *   mark?: mark.Mark,
  * }} Value
  */
@@ -192,11 +191,11 @@ async function positionHandler({ textDocument: { uri }, position }) {
  */
 async function tokenHandler(value) {
   if (value.token) {
-    value.node = await query.node(value.token.decl);
+    value.decl = [await query.node(value.token.decl)];
   } else {
     // Sometimes Clang does not generate tokens, e.g., in macro expansions within conditional preprocessors.
     // In such cases, we query the AST node by position.
-    value.node = await query.decl(value.src, value.pos);
+    value.decl = await query.decl(value.src, value.pos);
   }
   return value;
 }
@@ -207,14 +206,14 @@ async function tokenHandler(value) {
  * @returns {Promise<Value>}
  */
 async function hoverHandler(value) {
-  const { node } = value;
+  for (const decl of value.decl || []) {
+    if (!decl) continue;
 
-  if (node) {
     // TODO: add implicit label to implicitly declared functions
     // TODO: add hover info for those macros, e.g. __has_attribute,  are implicitly registered by compiler
-    const marks = getSpecsMarks(node.specs);
+    const marks = getSpecsMarks(decl.specs);
 
-    switch (node.kind) {
+    switch (decl.kind) {
       case "TypedefDecl":
         marks.push(new mark.Emphasis("typedef"), mark.space);
         break;
@@ -222,7 +221,7 @@ async function hoverHandler(value) {
         marks.push(new mark.Emphasis("field"), mark.space);
         break;
       case "RecordDecl":
-        switch (node.class) {
+        switch (decl.class) {
           case 1:
             marks.push(new mark.Emphasis("struct"), mark.space);
             break;
@@ -233,19 +232,19 @@ async function hoverHandler(value) {
           new mark.Emphasis("#define"),
           mark.space,
           new mark.Strong(
-            (await query.node(node.parent_number))?.name || "Never"
+            (await query.node(decl.parent_number))?.name || "Never"
           )
         );
         break;
       case "ExpansionDecl":
-        if (node.ref_ptr) {
-          const v = await hoverHandler({
-            ...value,
-            node: await query.node(node.ref_ptr),
-          });
+        if (decl.ref_ptr) {
+          const ref = await query.node(decl.ref_ptr);
+          if (!ref) break;
+
+          const v = await hoverHandler({ ...value, decl: [ref] });
           if (v.mark) {
             marks.push(v.mark, mark.newLine, mark.thematicBreak, mark.newLine);
-            const nodes = await query.range(node.number, node.final_number);
+            const nodes = await query.range(decl.number, decl.final_number);
             /** @type {Map<number, number>} */
             const indents = new Map();
             indents.set(nodes[0].number, 0);
@@ -286,25 +285,30 @@ async function hoverHandler(value) {
         break;
     }
 
-    if (node.kind !== "ExpansionDecl") {
-      if (node.name) {
+    if (decl.kind !== "ExpansionDecl") {
+      if (decl.name) {
         // The name field in MacroDecl is actually the parameters '()'
         marks.push(
-          new (node.kind === "MacroDecl" ? mark.Emphasis : mark.Strong)(
-            node.name
+          new (decl.kind === "MacroDecl" ? mark.Emphasis : mark.Strong)(
+            decl.name
           )
         );
       }
 
-      if (node.class) {
-        const children = await query.children(node.number);
-        if (children.length) marks.push(mark.newLine, mark.thematicBreak);
-        for (const node of children) {
-          const v = await hoverHandler({ ...value, node });
-          if (v.mark) marks.push(mark.lineEnding, mark.lineEnding, v.mark);
-        }
+      if (decl.class) {
+        const children = await hoverHandler({
+          ...value,
+          decl: await query.children(decl.number),
+        });
+        if (children.mark)
+          marks.push(
+            mark.newLine,
+            mark.thematicBreak,
+            mark.newLine,
+            children.mark
+          );
       } else {
-        const { qualified_type, desugared_type } = node;
+        const { qualified_type, desugared_type } = decl;
         if (qualified_type)
           marks.push(mark.colon, mark.space, new mark.Emphasis(qualified_type));
         if (desugared_type && desugared_type !== qualified_type)
@@ -312,12 +316,20 @@ async function hoverHandler(value) {
       }
     }
 
-    if (node.begin_src != -1 && node.begin_src != value.src) {
-      const filename = await query.filename(node.begin_src);
+    if (decl.begin_src != -1 && decl.begin_src != value.src) {
+      const filename = await query.filename(decl.begin_src);
       if (filename) marks.push(new mark.Provider(filename));
     }
 
-    value.mark = new mark.Mark(marks);
+    if (value.mark) {
+      value.mark = new mark.Mark([
+        value.mark,
+        mark.newLine,
+        new mark.Mark(marks),
+      ]);
+    } else {
+      value.mark = new mark.Mark(marks);
+    }
   }
   return value;
 }
@@ -329,8 +341,13 @@ async function hoverHandler(value) {
  */
 async function declarationHandler(value) {
   if (value.link) {
-    const definition = value.link[0];
-    value.link.push(...(await query.decl(definition)));
+    for (const link of value.link) {
+      if (link) {
+        const definition = link[0];
+        const declarations = await query.decl(definition);
+        link.push(...declarations);
+      }
+    }
   }
 
   return value;
@@ -342,11 +359,12 @@ async function declarationHandler(value) {
  * @returns {Promise<Value>}
  */
 async function definitionHandler(value) {
-  const { node } = value;
-
-  if (node) {
-    const decl = await query.def(node);
-    if (decl) value.link = [decl];
+  if (value.decl) {
+    value.link = [];
+    for (const decl of value.decl) {
+      const def = decl && (await query.def(decl));
+      value.link.push(def && [def]);
+    }
   }
 
   return value;
@@ -358,19 +376,20 @@ async function definitionHandler(value) {
  * @returns {Promise<Value>}
  */
 async function typeDefinitionHandler(value) {
-  const { node } = value;
-
-  if (node) {
-    switch (node.kind) {
-      case "VarDecl":
-      case "ParmVarDecl":
-      case "FunctionDecl":
-      case "FieldDecl":
-        if (node.type_ptr) {
-          const type = await query.node(node.type_ptr);
-          if (type) value.link = [type];
-        }
-        break;
+  if (value.decl) {
+    value.link = [];
+    for (const decl of value.decl) {
+      switch (decl?.kind) {
+        case "VarDecl":
+        case "ParmVarDecl":
+        case "FunctionDecl":
+        case "FieldDecl":
+          if (decl.type_ptr) {
+            const type = await query.node(decl.type_ptr);
+            value.link.push(type && [type]);
+          }
+          break;
+      }
     }
   }
 
@@ -385,7 +404,10 @@ function documentHighlightHandler(value) {
   if (value.link) {
     /** @type {import("vscode-languageserver/node.js").DocumentHighlight[]} */
     const result = [];
-    for (const node of value.link) {
+    for (const link of value.link) {
+      if (!link) continue;
+
+      const node = link[0];
       if (node.begin_src === value.src) {
         result.push({
           range: getRanges(node, value.doc).selectionRange,
@@ -409,17 +431,22 @@ function referencesHandler(context) {
    */
   return async (value) => {
     if (value.link) {
-      const definition = value.link[0];
-      const refs = await query.refs(
-        value.link.map((node) => node.ptr),
-        {
-          member: definition.kind === "FieldDecl",
-          src: context.scoped ? value.src : undefined,
-        }
-      );
+      for (let i = 0, n = value.link.length; i < n; ++i) {
+        const link = value.link[i];
+        if (!link) continue;
 
-      if (context.includeDeclaration) value.link.push(...refs);
-      else value.link = refs;
+        const def = link[0];
+        const refs = await query.refs(
+          link.map((node) => node.ptr),
+          {
+            member: def.kind === "FieldDecl",
+            src: context.scoped ? value.src : undefined,
+          }
+        );
+
+        if (context.includeDeclaration) link.push(...refs);
+        else value.link[i] = refs;
+      }
     }
 
     return value;
@@ -513,14 +540,18 @@ async function linkHandler(value) {
     /** @type {import("vscode-languageserver/node.js").LocationLink[]} */
     const links = [];
 
-    for (const node of value.link) {
-      const link = await getLink(node);
-      if (link)
-        links.push({
-          targetUri: link.uri,
-          targetRange: link.range,
-          targetSelectionRange: link.selectionRange,
-        });
+    for (const items of value.link) {
+      if (!items) continue;
+
+      for (const node of items) {
+        const link = await getLink(node);
+        if (link)
+          links.push({
+            targetUri: link.uri,
+            targetRange: link.range,
+            targetSelectionRange: link.selectionRange,
+          });
+      }
     }
     return links;
   }
@@ -689,6 +720,8 @@ connection.onDidChangeConfiguration(async ({ settings }) => {
 });
 
 connection.onDocumentLinks(async ({ textDocument }) => {
+  if (!query.tu) return null;
+
   const { src } = await getUriInfo(textDocument.uri);
   const nodes = await query.links(src);
   /** @type {import("vscode-languageserver/node.js").DocumentLink[]} */
@@ -721,6 +754,8 @@ connection.onDocumentLinks(async ({ textDocument }) => {
 });
 
 connection.onDocumentSymbol(async ({ textDocument }) => {
+  if (!query.tu) return null;
+
   const { doc, src } = await getUriInfo(textDocument.uri);
   const nodes = await query.symbols(src);
   /** @type {import("vscode-languageserver/node.js").DocumentSymbol[]} */
@@ -739,6 +774,8 @@ connection.onDocumentSymbol(async ({ textDocument }) => {
 });
 
 connection.onDefinition(async (param) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -752,6 +789,8 @@ connection.onDefinition(async (param) => {
 });
 
 connection.onDeclaration(async (param) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -766,6 +805,8 @@ connection.onDeclaration(async (param) => {
 });
 
 connection.onTypeDefinition(async (param) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -779,6 +820,8 @@ connection.onTypeDefinition(async (param) => {
 });
 
 connection.onReferences(async ({ context, ...param }) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -795,6 +838,8 @@ connection.onReferences(async ({ context, ...param }) => {
 });
 
 connection.onHover(async (param) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -808,6 +853,8 @@ connection.onHover(async (param) => {
 });
 
 connection.onDocumentHighlight(async (param) => {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -827,6 +874,8 @@ connection.onDocumentHighlight(async (param) => {
  * @returns {Promise<import("vscode-languageserver/node.js").SemanticTokens | null>}
  */
 async function onTextDocumentSemanticTokens({ textDocument, range }) {
+  if (!query.tu) return null;
+
   const { doc, src } = await getUriInfo(textDocument.uri);
   const semanticRanges = await query.semantics(src, range);
 
@@ -932,22 +981,31 @@ function prepareCallHierarchyHandler({ textDocument }) {
    * @param {Value} value
    * @returns {import("vscode-languageserver/node.js").CallHierarchyItem[] | null}
    */
-  return ({ doc, link, node }) => {
-    if (!link || !node || !node.name) return null;
-    /** @type {any} */
-    const kind = getSymbolKind(node);
-    if (!kind) return null;
+  return ({ doc, link, decl }) => {
+    if (!link || !decl) return null;
 
-    return [
-      {
+    /** @type {import("vscode-languageserver/node.js").CallHierarchyItem[]} */
+    const items = [];
+
+    for (let i = 0, n = decl.length; i < n; ++i) {
+      const node = decl[i];
+      if (!link[i] || !node?.name) continue;
+
+      /** @type {any} */
+      const kind = getSymbolKind(node);
+      if (!kind) continue;
+
+      items.push({
         kind,
         name: node.name,
         detail: node.qualified_type,
         uri: textDocument.uri,
-        data: link,
+        data: link[i],
         ...getRanges(node, doc),
-      },
-    ];
+      });
+    }
+
+    return items;
   };
 }
 
@@ -957,6 +1015,8 @@ function prepareCallHierarchyHandler({ textDocument }) {
  * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyItem[] | null>}
  */
 async function onPrepareCallHierarchy(param) {
+  if (!query.tu) return null;
+
   let value = /** @type {any} */ (param);
   for (const handler of [
     positionHandler,
@@ -976,7 +1036,7 @@ async function onPrepareCallHierarchy(param) {
  * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyIncomingCall[] | null>}
  */
 async function onIncomingCalls({ item }) {
-  if (!item.data) return null;
+  if (!query.tu || !item.data) return null;
 
   /** @type {import("./query.js").Node[]} */
   const declarations = item.data;
@@ -1046,7 +1106,7 @@ async function onIncomingCalls({ item }) {
  * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyOutgoingCall[] | null>}
  */
 async function onOutgoingCalls({ item }) {
-  if (!item.data) return null;
+  if (!query.tu || !item.data) return null;
 
   /** @type {import("./query.js").Node} */
   const definition = item.data[0];
