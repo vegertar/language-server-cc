@@ -709,7 +709,7 @@ connection.onDidChangeConfiguration(async ({ settings }) => {
 });
 
 connection.onDocumentLinks(async ({ textDocument }) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   const { src } = await getUriInfo(textDocument.uri);
   const nodes = await query.links(src);
@@ -743,7 +743,7 @@ connection.onDocumentLinks(async ({ textDocument }) => {
 });
 
 connection.onDocumentSymbol(async ({ textDocument }) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   const { doc, src } = await getUriInfo(textDocument.uri);
   const nodes = await query.symbols(src);
@@ -763,7 +763,7 @@ connection.onDocumentSymbol(async ({ textDocument }) => {
 });
 
 connection.onDefinition(async (param) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   let value = /** @type {any} */ (param);
   for (const handler of [
@@ -778,7 +778,7 @@ connection.onDefinition(async (param) => {
 });
 
 connection.onDeclaration(async (param) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   let value = /** @type {any} */ (param);
   for (const handler of [
@@ -794,7 +794,7 @@ connection.onDeclaration(async (param) => {
 });
 
 connection.onTypeDefinition(async (param) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   let value = /** @type {any} */ (param);
   for (const handler of [
@@ -809,7 +809,7 @@ connection.onTypeDefinition(async (param) => {
 });
 
 connection.onReferences(async ({ context, ...param }) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   let value = /** @type {any} */ (param);
   for (const handler of [
@@ -827,7 +827,7 @@ connection.onReferences(async ({ context, ...param }) => {
 });
 
 connection.onHover(async (param) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   let value = /** @type {any} */ (param);
   for (const handler of [
@@ -842,7 +842,7 @@ connection.onHover(async (param) => {
 });
 
 connection.onDocumentHighlight(async (param) => {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   let value = /** @type {any} */ (param);
   for (const handler of [
@@ -863,7 +863,7 @@ connection.onDocumentHighlight(async (param) => {
  * @returns {Promise<import("vscode-languageserver/node.js").SemanticTokens | null>}
  */
 async function onTextDocumentSemanticTokens({ textDocument, range }) {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   const { doc, src } = await getUriInfo(textDocument.uri);
   const semanticRanges = await query.semantics(src, range);
@@ -1004,7 +1004,7 @@ function prepareCallHierarchyHandler({ textDocument }) {
  * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyItem[] | null>}
  */
 async function onPrepareCallHierarchy(param) {
-  if (!query.tu) return null;
+  await query.tuPromise;
 
   let value = /** @type {any} */ (param);
   for (const handler of [
@@ -1025,7 +1025,9 @@ async function onPrepareCallHierarchy(param) {
  * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyIncomingCall[] | null>}
  */
 async function onIncomingCalls({ item }) {
-  if (!query.tu || !item.data) return null;
+  await query.tuPromise;
+
+  if (!item.data) return null;
 
   /** @type {import("./query.js").Node[]} */
   const declarations = item.data;
@@ -1095,7 +1097,9 @@ async function onIncomingCalls({ item }) {
  * @returns {Promise<import("vscode-languageserver/node.js").CallHierarchyOutgoingCall[] | null>}
  */
 async function onOutgoingCalls({ item }) {
-  if (!query.tu || !item.data) return null;
+  await query.tuPromise;
+
+  if (!item.data) return null;
 
   /** @type {import("./query.js").Node} */
   const definition = item.data[0];

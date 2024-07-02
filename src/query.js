@@ -63,11 +63,23 @@ export default class Query {
   /** @type {string} */
   #tu;
 
+  /** @type {Promise<string>} */
+  #tuPromise;
+
+  /** @type {((tu: string) => void) | undefined} */
+  #tuResolve;
+
   /** @type {Map<string, import("sqlite3").Database>} */
   #allDatabases = new Map();
 
   /** @type {import("sqlite3").Database} */
   db;
+
+  constructor() {
+    this.#tuPromise = new Promise((resolve) => {
+      this.#tuResolve = resolve;
+    });
+  }
 
   /**
    * @param {string} path
@@ -82,11 +94,22 @@ export default class Query {
 
       this.db = db;
       this.#tu = path;
+
+      if (this.#tuResolve) {
+        this.#tuResolve(path);
+        this.#tuResolve = undefined;
+      } else {
+        this.#tuPromise = Promise.resolve(path);
+      }
     }
   }
 
   get tu() {
     return this.#tu;
+  }
+
+  get tuPromise() {
+    return this.#tuPromise;
   }
 
   /**
