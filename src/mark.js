@@ -5,6 +5,25 @@ export class Mark {
    */
   constructor(content) {
     this.content = content;
+    this.list = false;
+  }
+
+  /**
+   *
+   * @param  {string | Mark | (string | Mark)[]} mark
+   */
+  appendList(mark) {
+    if (!this.list) {
+      this.content = [new BulletListItem(this.content)];
+      this.list = true;
+    }
+
+    this.content.push(
+      newLine,
+      mark instanceof BulletListItem ? mark : new BulletListItem(mark)
+    );
+
+    return this;
   }
 
   /**
@@ -109,7 +128,14 @@ export class BulletListItem extends Mark {
    */
   static escape(content) {
     const s = Mark.toText(content);
-    return ["- ", BulletListItem.isMarker(s.charAt(0)) ? "\\" : "", s];
+    return [
+      "- ",
+      BulletListItem.isMarker(s.charAt(0)) &&
+      BulletListItem.isWhite(s.charAt(1))
+        ? "\\"
+        : "",
+      s,
+    ];
   }
 
   /**
@@ -118,6 +144,14 @@ export class BulletListItem extends Mark {
    */
   static isMarker(s) {
     return s === "-" || s === "+" || s === "*";
+  }
+
+  /**
+   *
+   * @param {string} s
+   */
+  static isWhite(s) {
+    return s === " " || s === "\t" || s === "\n";
   }
 }
 

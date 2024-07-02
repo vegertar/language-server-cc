@@ -203,9 +203,10 @@ async function tokenHandler(value) {
 /**
  *
  * @param {Value} value
+ * @param {{noProvider?: boolean}} [options]
  * @returns {Promise<Value>}
  */
-async function hoverHandler(value) {
+async function hoverHandler(value, options) {
   for (const decl of value.decl || []) {
     if (!decl) continue;
 
@@ -235,7 +236,10 @@ async function hoverHandler(value) {
           const ref = await query.node(decl.ref_ptr);
           if (!ref) break;
 
-          const v = await hoverHandler({ ...value, decl: [ref] });
+          const v = await hoverHandler(
+            { ...value, decl: [ref] },
+            { noProvider: true }
+          );
           if (v.mark) {
             marks.push(v.mark, mark.newLine, mark.thematicBreak, mark.newLine);
             const nodes = await query.range(decl.number, decl.final_number);
@@ -285,10 +289,10 @@ async function hoverHandler(value) {
       }
 
       if (decl.class) {
-        const children = await hoverHandler({
-          ...value,
-          decl: await query.children(decl.number),
-        });
+        const children = await hoverHandler(
+          { ...value, decl: await query.children(decl.number) },
+          { noProvider: true }
+        );
         if (children.mark)
           marks.push(
             mark.newLine,
@@ -305,17 +309,17 @@ async function hoverHandler(value) {
       }
     }
 
-    if (decl.begin_src != -1 && decl.begin_src != value.src) {
+    if (
+      !options?.noProvider &&
+      decl.begin_src != -1 &&
+      decl.begin_src != value.src
+    ) {
       const filename = await query.filename(decl.begin_src);
       if (filename) marks.push(new mark.Provider(filename));
     }
 
     if (value.mark) {
-      value.mark = new mark.Mark([
-        value.mark,
-        mark.newLine,
-        new mark.Mark(marks),
-      ]);
+      value.mark.appendList(marks);
     } else {
       value.mark = new mark.Mark(marks);
     }
@@ -352,7 +356,8 @@ async function definitionHandler(value) {
     value.link = [];
     for (const decl of value.decl) {
       const def = decl && (await query.def(decl));
-      value.link.push(def && [def]);
+      // fallback to decl if possible
+      value.link.push(def ? [def] : decl && [decl]);
     }
   }
 
@@ -396,11 +401,10 @@ function documentHighlightHandler(value) {
     for (const link of value.link) {
       if (!link) continue;
 
-      const node = link[0];
-      if (node.begin_src === value.src) {
-        result.push({
-          range: getRanges(node, value.doc).selectionRange,
-        });
+      for (const node of link) {
+        if (node.begin_src === value.src) {
+          result.push({ range: getRanges(node, value.doc).selectionRange });
+        }
       }
     }
     return result;
@@ -424,13 +428,9 @@ function referencesHandler(context) {
         const link = value.link[i];
         if (!link) continue;
 
-        const def = link[0];
         const refs = await query.refs(
           link.map((node) => node.ptr),
-          {
-            member: def.kind === "FieldDecl",
-            src: context.scoped ? value.src : undefined,
-          }
+          context.scoped ? value.src : undefined
         );
 
         if (context.includeDeclaration) link.push(...refs);
