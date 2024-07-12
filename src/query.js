@@ -397,16 +397,55 @@ export default class Query {
   }
 
   /**
-   *
+   * @overload
    * @param {number} first
    * @param {number} last
    * @returns {Promise<Node[]>}
    */
-  range(first, last) {
+
+  /**
+   * @overload
+   * @param {number} src
+   * @param {import("vscode-languageserver/node.js").Range} range
+   * @returns {Promise<Node[]>}
+   */
+
+  /**
+   * @param {any[]} params
+   */
+  range(...params) {
+    if (typeof params[1] === "number") {
+      const [first, last] = /** @type {[number, number]} */ (params);
+      return new Promise((resolve, reject) => {
+        this.db.all(
+          "SELECT * FROM ast WHERE number >= $first AND number <= $last",
+          { $first: first, $last: last },
+          (err, rows) => {
+            if (err) {
+              reject(err);
+            } else {
+              resolve(rows);
+            }
+          }
+        );
+      });
+    }
+
+    const [src, range] =
+      /** @type {[number, import("vscode-languageserver/node.js").Range]} */ (
+        params
+      );
+
     return new Promise((resolve, reject) => {
       this.db.all(
-        "SELECT * FROM ast WHERE number >= $first AND number <= $last",
-        { $first: first, $last: last },
+        "SELECT * FROM ast WHERE begin_src = $src AND (($begin_row = begin_row AND $begin_col <= begin_col) OR ($begin_row < begin_row)) AND ((end_row = $end_row AND end_col <= $end_col) OR (end_row < $end_row))",
+        {
+          $src: src,
+          $begin_row: range.start.line + 1,
+          $begin_col: range.start.character + 1,
+          $end_row: range.end.line + 1,
+          $end_col: range.end.character + 1,
+        },
         (err, rows) => {
           if (err) {
             reject(err);
